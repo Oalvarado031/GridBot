@@ -1944,6 +1944,68 @@ void ResetCacheEdits()
    PrevSL = DoubleToString(p_SL, _Digits);
 }
 
+//+------------------------------------------------------------------+
+//| PERSISTENCIA — Guardar/Cargar estado entre cambios de timeframe  |
+//+------------------------------------------------------------------+
+string GVarPrefix() { return "GridBot_" + _Symbol + "_" + IntegerToString(Magic_Number) + "_"; }
+
+void GuardarEstado()
+{
+   string p = GVarPrefix();
+   GlobalVariableSet(p + "estado",        (double)estado);
+   GlobalVariableSet(p + "p_Direccion",   (double)p_Direccion);
+   GlobalVariableSet(p + "p_Techo",       p_Techo);
+   GlobalVariableSet(p + "p_Piso",        p_Piso);
+   GlobalVariableSet(p + "p_Trigger",     p_Trigger);
+   GlobalVariableSet(p + "p_G",           p_G);
+   GlobalVariableSet(p + "p_Capital",     p_Capital);
+   GlobalVariableSet(p + "p_Vol",         p_Vol);
+   GlobalVariableSet(p + "p_Risk",        p_Risk);
+   GlobalVariableSet(p + "p_MaxOrd",      (double)p_MaxOrd);
+   GlobalVariableSet(p + "p_Libre",       p_Libre ? 1.0 : 0.0);
+   GlobalVariableSet(p + "p_TP",          p_TP);
+   GlobalVariableSet(p + "p_SL",          p_SL);
+   GlobalVariableSet(p + "GananciaAcum",  GananciaAcumulada);
+   GlobalVariableSet(p + "PanelMinimized", PanelMinimized ? 1.0 : 0.0);
+   GlobalVariableSet(p + "PanelPosX",     (double)PanelPosX);
+   GlobalVariableSet(p + "PanelPosY",     (double)PanelPosY);
+   GlobalVariableSet(p + "Saved",         1.0);
+}
+
+bool CargarEstado()
+{
+   string p = GVarPrefix();
+   if(!GlobalVariableCheck(p + "Saved")) return false;
+
+   estado          = (EstadoBot)(int)GlobalVariableGet(p + "estado");
+   p_Direccion     = (DireccionGrid)(int)GlobalVariableGet(p + "p_Direccion");
+   p_Techo         = GlobalVariableGet(p + "p_Techo");
+   p_Piso          = GlobalVariableGet(p + "p_Piso");
+   p_Trigger       = GlobalVariableGet(p + "p_Trigger");
+   p_G             = GlobalVariableGet(p + "p_G");
+   p_Capital       = GlobalVariableGet(p + "p_Capital");
+   p_Vol           = GlobalVariableGet(p + "p_Vol");
+   p_Risk          = GlobalVariableGet(p + "p_Risk");
+   p_MaxOrd        = (int)GlobalVariableGet(p + "p_MaxOrd");
+   p_Libre         = GlobalVariableGet(p + "p_Libre") > 0.5;
+   p_TP            = GlobalVariableGet(p + "p_TP");
+   p_SL            = GlobalVariableGet(p + "p_SL");
+   GananciaAcumulada = GlobalVariableGet(p + "GananciaAcum");
+   PanelMinimized  = GlobalVariableGet(p + "PanelMinimized") > 0.5;
+   PanelPosX       = (int)GlobalVariableGet(p + "PanelPosX");
+   PanelPosY       = (int)GlobalVariableGet(p + "PanelPosY");
+   return true;
+}
+
+void BorrarEstadoGuardado()
+{
+   string p = GVarPrefix();
+   string keys[18] = {"estado","p_Direccion","p_Techo","p_Piso","p_Trigger","p_G","p_Capital",
+                       "p_Vol","p_Risk","p_MaxOrd","p_Libre","p_TP","p_SL","GananciaAcum",
+                       "PanelMinimized","PanelPosX","PanelPosY","Saved"};
+   for(int i = 0; i < 18; i++) GlobalVariableDel(p + keys[i]);
+}
+
 int OnInit()
 {
    Print("================================================");
