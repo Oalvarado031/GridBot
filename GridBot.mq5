@@ -341,23 +341,33 @@ void PB(string id, int x, int y, int w, int h, string txt, color bg, color clr, 
 void PE(string id, int x, int y, int w, int h, string val)
 {
    string n = PFX + "E_" + id;
-   if(ObjectFind(0, n) < 0) ObjectCreate(0, n, OBJ_EDIT, 0, 0, 0);
+   bool existed = (ObjectFind(0, n) >= 0);
+   if(!existed) ObjectCreate(0, n, OBJ_EDIT, 0, 0, 0);
    ObjectSetInteger(0, n, OBJPROP_CORNER,       CORNER_LEFT_UPPER);
    ObjectSetInteger(0, n, OBJPROP_XDISTANCE,    x);
    ObjectSetInteger(0, n, OBJPROP_YDISTANCE,    y);
    ObjectSetInteger(0, n, OBJPROP_XSIZE,        w);
    ObjectSetInteger(0, n, OBJPROP_YSIZE,        h);
-   ObjectSetString(0,  n, OBJPROP_TEXT,         val);
+   // CRITICAL: solo setear texto si el objeto es NUEVO
+   // Si ya existía (el usuario lo está editando), respetar su valor actual
+   if(!existed) ObjectSetString(0, n, OBJPROP_TEXT, val);
    ObjectSetInteger(0, n, OBJPROP_BGCOLOR,      CLR_BG_DEEP);
    ObjectSetInteger(0, n, OBJPROP_COLOR,        CLR_TEXT);
    ObjectSetInteger(0, n, OBJPROP_BORDER_COLOR, CLR_BORDER);
    ObjectSetInteger(0, n, OBJPROP_FONTSIZE,     10);
    ObjectSetString(0,  n, OBJPROP_FONT,         "Consolas");
    ObjectSetInteger(0, n, OBJPROP_ALIGN,        ALIGN_LEFT);
-   // OBJ_EDIT debe ser READ_ONLY=false y BACK=false para recibir eventos de edicion
    ObjectSetInteger(0, n, OBJPROP_READONLY,     false);
    ObjectSetInteger(0, n, OBJPROP_SELECTABLE,   false);
    ObjectSetInteger(0, n, OBJPROP_BACK,         false);
+}
+
+// Forzar setear texto en un OBJ_EDIT (usado cuando hace falta resetear el valor)
+void PE_Force(string id, string val)
+{
+   string n = PFX + "E_" + id;
+   if(ObjectFind(0, n) >= 0)
+      ObjectSetString(0, n, OBJPROP_TEXT, val);
 }
 
 void PHR(string id, int x, int y, int w, color clr)  { PR(id, x, y, w, 1, clr, clr, 0); }
@@ -1106,10 +1116,8 @@ void AplicarConfiguracionAuto()
    CalcularRiesgo();
    DibujarLineasGrid();
    DibujarPanel();
-   BorrarConfigDialog();
-   DibujarConfigDialog();
-   PrintFormat("AUTO-APPLY: Rejillas=%d, Real=%.2f%% ($%.2f), Seguro=%d",
-               ArraySize(GridLevels), RiesgoRealPct, RiesgoRealUSD, MaxOrdersSafe);
+   // CRITICAL: NO redibujar dialog completo (rompe edicion). Solo visuales del body.
+   RedibujarSoloVisualesBody();
 }
 
 void AplicarConfiguracion()
@@ -1191,13 +1199,26 @@ void AplicarConfiguracion()
    // Si se aplicaron valores validos, recalcular TODO siempre
    if(aplicado)
    {
-      CalcularRejillas();      // siempre recalcular niveles del grid
-      CalcularRiesgo();        // recalcular metricas con los nuevos valores
-      DibujarLineasGrid();     // refrescar lineas del chart
-      DibujarPanel();          // refrescar panel principal
-      BorrarConfigDialog();    // refrescar el dialog completo
-      DibujarConfigDialog();
-      PrintFormat("ESTADO: Rejillas=%d, Real=%.2f%% ($%.2f), Seguro=%d",
+      CalcularRejillas();
+      CalcularRiesgo();
+      DibujarLineasGrid();
+      DibujarPanel();
+      // Sincronizar valores de los OBJ_EDIT con los p_* aplicados (en caso de que difieran)
+      PE_Force("CFG_E_TECHO",   DoubleToString(p_Techo,   _Digits));
+      PE_Force("CFG_E_PISO",    DoubleToString(p_Piso,    _Digits));
+      PE_Force("CFG_E_TRIGGER", DoubleToString(p_Trigger, _Digits));
+      PE_Force("CFG_E_G",       DoubleToString(p_G, 4));
+      PE_Force("CFG_E_VOL",     DoubleToString(p_Vol, 2));
+      PE_Force("CFG_E_CAP",     DoubleToString(p_Capital, 2));
+      PE_Force("CFG_E_RISK",    DoubleToString(p_Risk, 2));
+      PE_Force("CFG_E_MAXO",    IntegerToString(p_MaxOrd));
+      PE_Force("CFG_E_TP",      DoubleToString(p_TP, _Digits));
+      PE_Force("CFG_E_SL",      DoubleToString(p_SL, _Digits));
+      // Refrescar la cache para evitar que el timer detecte falsos cambios
+      ResetCacheEdits();
+      // Solo redibujar visuales del body, sin tocar OBJ_EDIT
+      RedibujarSoloVisualesBody();
+      PrintFormat("APPLY MANUAL: Rej=%d Real=%.2f%% ($%.2f) Seguro=%d",
                   ArraySize(GridLevels), RiesgoRealPct, RiesgoRealUSD, MaxOrdersSafe);
    }
 }
@@ -1718,6 +1739,10 @@ void OnChartEvent(const int id, const long& lparam, const double& dparam, const 
 //+------------------------------------------------------------------+
 //| OnTimer — verifica los OBJ_EDIT cada 200ms y aplica si cambian   |
 //+------------------------------------------------------------------+
+// Debounce: cuando el usuario edita, esperamos 400ms sin cambios antes de aplicar
+ulong   LastEditTick     = 0;
+bool    PendingRecalc    = false;
+
 void OnTimer()
 {
    if(!ConfigVisible || ConfigMinimized) return;
@@ -1725,36 +1750,168 @@ void OnTimer()
    bool changed = false;
    string cur;
 
-   // Pestaña RANGO
+   // ---- DETECTAR cambios en cualquier campo y leerlos ----
    if(ObjectFind(0, PFX + "E_CFG_E_TECHO") >= 0)
    {
-      cur = GetEdit("CFG_E_TECHO");   if(cur != PrevTecho)   { PrevTecho   = cur; changed = true; }
-      cur = GetEdit("CFG_E_PISO");    if(cur != PrevPiso)    { PrevPiso    = cur; changed = true; }
-      cur = GetEdit("CFG_E_TRIGGER"); if(cur != PrevTrigger) { PrevTrigger = cur; changed = true; }
-      cur = GetEdit("CFG_E_G");       if(cur != PrevG)       { PrevG       = cur; changed = true; }
-      cur = GetEdit("CFG_E_VOL");     if(cur != PrevVol)     { PrevVol     = cur; changed = true; }
+      cur = GetEdit("CFG_E_TECHO");
+      if(cur != PrevTecho)
+      {
+         PrevTecho = cur;
+         double v = StringToDouble(cur);
+         if(v > 0) p_Techo = v;
+         changed = true;
+      }
+      cur = GetEdit("CFG_E_PISO");
+      if(cur != PrevPiso)
+      {
+         PrevPiso = cur;
+         double v = StringToDouble(cur);
+         if(v > 0) p_Piso = v;
+         changed = true;
+      }
+      cur = GetEdit("CFG_E_TRIGGER");
+      if(cur != PrevTrigger)
+      {
+         PrevTrigger = cur;
+         double v = StringToDouble(cur);
+         if(v > 0) p_Trigger = v;
+         changed = true;
+      }
+      cur = GetEdit("CFG_E_G");
+      if(cur != PrevG)
+      {
+         PrevG = cur;
+         double v = StringToDouble(cur);
+         if(v > 0) p_G = v;
+         changed = true;
+      }
+      cur = GetEdit("CFG_E_VOL");
+      if(cur != PrevVol)
+      {
+         PrevVol = cur;
+         double v = StringToDouble(cur);
+         if(v > 0) p_Vol = v;
+         changed = true;
+      }
    }
 
-   // Pestaña RIESGO
    if(ObjectFind(0, PFX + "E_CFG_E_CAP") >= 0)
    {
-      cur = GetEdit("CFG_E_CAP");  if(cur != PrevCap)  { PrevCap  = cur; changed = true; }
-      cur = GetEdit("CFG_E_RISK"); if(cur != PrevRisk) { PrevRisk = cur; changed = true; }
-      cur = GetEdit("CFG_E_MAXO"); if(cur != PrevMaxo) { PrevMaxo = cur; changed = true; }
+      cur = GetEdit("CFG_E_CAP");
+      if(cur != PrevCap)
+      {
+         PrevCap = cur;
+         double v = StringToDouble(cur);
+         if(v > 0) p_Capital = v;
+         changed = true;
+      }
+      cur = GetEdit("CFG_E_RISK");
+      if(cur != PrevRisk)
+      {
+         PrevRisk = cur;
+         double v = StringToDouble(cur);
+         if(v > 0 && v <= 100) p_Risk = v;
+         changed = true;
+      }
+      cur = GetEdit("CFG_E_MAXO");
+      if(cur != PrevMaxo)
+      {
+         PrevMaxo = cur;
+         int v = (int)StringToInteger(cur);
+         if(v > 0) p_MaxOrd = v;
+         changed = true;
+      }
    }
 
-   // Pestaña SALIDAS
    if(ObjectFind(0, PFX + "E_CFG_E_TP") >= 0)
    {
-      cur = GetEdit("CFG_E_TP"); if(cur != PrevTP) { PrevTP = cur; changed = true; }
-      cur = GetEdit("CFG_E_SL"); if(cur != PrevSL) { PrevSL = cur; changed = true; }
+      cur = GetEdit("CFG_E_TP");
+      if(cur != PrevTP)
+      {
+         PrevTP = cur;
+         double v = StringToDouble(cur);
+         if(v > 0) p_TP = v;
+         changed = true;
+      }
+      cur = GetEdit("CFG_E_SL");
+      if(cur != PrevSL)
+      {
+         PrevSL = cur;
+         double v = StringToDouble(cur);
+         if(v > 0) p_SL = v;
+         changed = true;
+      }
    }
 
+   // Si hubo cambio, marcar pendiente y reiniciar timer
    if(changed)
    {
-      AplicarConfiguracionAuto();
-      Print(">>> Cambio detectado en config dialog - auto-aplicado");
+      LastEditTick = GetTickCount();
+      PendingRecalc = true;
    }
+
+   // Aplicar despues de 400ms sin cambios (debounce)
+   if(PendingRecalc && (GetTickCount() - LastEditTick) > 400)
+   {
+      PendingRecalc = false;
+      // Recalcular con los nuevos valores
+      CalcularRejillas();
+      CalcularRiesgo();
+      DibujarLineasGrid();
+      DibujarPanel();
+      // CRITICAL: solo redibujar elementos visuales (NO los OBJ_EDIT)
+      RedibujarSoloVisualesBody();
+      PrintFormat("AUTO-APPLY: Rej=%d Real=%.2f%% ($%.2f) Seguro=%d",
+                  ArraySize(GridLevels), RiesgoRealPct, RiesgoRealUSD, MaxOrdersSafe);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Borrar y redibujar SOLO los elementos visuales del body actual   |
+//| MANTIENE los OBJ_EDIT (E_*) intactos para no romper la edicion   |
+//+------------------------------------------------------------------+
+void RedibujarSoloVisualesBody()
+{
+   // Borrar elementos visuales del body (cards, labels, badges, dots)
+   // pero NO los OBJ_EDIT
+   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+   {
+      string n = ObjectName(0, i);
+      if(StringFind(n, PFX) != 0) continue;
+      // Mantener OBJ_EDIT intactos
+      if(StringFind(n, PFX + "E_") == 0) continue;
+      // Solo borrar elementos del body (cards de range, riesgo, salidas)
+      if(StringFind(n, PFX + "R_CFG_RANGE_") == 0 ||
+         StringFind(n, PFX + "L_CFG_RC_") == 0    ||
+         StringFind(n, PFX + "R_CFG_RSK_") == 0   ||
+         StringFind(n, PFX + "L_CFG_RSK_") == 0   ||
+         StringFind(n, PFX + "R_CFG_EXT_") == 0   ||
+         StringFind(n, PFX + "L_CFG_EXT_") == 0   ||
+         StringFind(n, PFX + "B_CFG_EXT_") == 0   ||
+         // suffix boxes y direccion buttons
+         StringFind(n, PFX + "L_CFG_E_") == 0     ||
+         StringFind(n, PFX + "R_CFG_E_") == 0     ||
+         StringFind(n, PFX + "B_CFG_DIR_") == 0   ||
+         StringFind(n, PFX + "B_CFG_ML_") == 0    ||
+         StringFind(n, PFX + "L_CFG_DIR_") == 0   ||
+         StringFind(n, PFX + "L_CFG_ML_") == 0)
+      {
+         ObjectDelete(0, n);
+      }
+   }
+
+   // Redibujar el body de la pestaña actual (sin tocar OBJ_EDIT que se mantienen)
+   int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   int by    = ConfigPosY + CFG_HDR_H + CFG_TABS_H + CFG_BODY_PAD_TOP;
+   int bodyW = CfgW - CFG_PAD * 2;
+   int bodyMaxH = (ConfigPosY + CfgH - CFG_FOOT_H) - by - Sc(8);
+
+   if     (ConfigTab == 0) DibujarBodyRango(ConfigPosX + CFG_PAD,  by, bodyW, bodyMaxH);
+   else if(ConfigTab == 1) DibujarBodyRiesgo(ConfigPosX + CFG_PAD, by, bodyW, bodyMaxH);
+   else                    DibujarBodySalidas(ConfigPosX + CFG_PAD, by, bodyW, bodyMaxH);
+
+   ChartRedraw(0);
 }
 
 //+------------------------------------------------------------------+
