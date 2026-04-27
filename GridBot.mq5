@@ -477,13 +477,13 @@ void DibujarAlerta()
 void DibujarBotonesEsquina()
 {
    double sc = GetUIScale();
-   int btnW   = Sc(110);
-   int btnH   = Sc(32);
-   int badgeW = Sc(80);
-   int gap    = Sc(8);
-   int margin = Sc(12);
+   int btnW   = Sc(86);
+   int btnH   = Sc(26);
+   int badgeW = Sc(64);
+   int gap    = Sc(6);
+   int margin = Sc(10);
 
-   PB("CFGBTN", btnW + margin, margin, btnW, btnH, "CONFIG", CLR_ACCENT, CLR_TEXT, Sc(11));
+   PB("CFGBTN", btnW + margin, margin, btnW, btnH, "CONFIG", CLR_ACCENT, CLR_TEXT, Sc(9));
    ObjectSetInteger(0, PFX + "B_CFGBTN", OBJPROP_CORNER,       CORNER_RIGHT_UPPER);
    ObjectSetInteger(0, PFX + "B_CFGBTN", OBJPROP_XDISTANCE,    btnW + margin);
    ObjectSetInteger(0, PFX + "B_CFGBTN", OBJPROP_YDISTANCE,    margin);
@@ -492,7 +492,7 @@ void DibujarBotonesEsquina()
    color  dirC = (p_Direccion == GRID_LONG) ? CLR_GREEN : CLR_RED;
    string dirT = (p_Direccion == GRID_LONG) ? "LONG" : "SHORT";
    int badgeXDist = btnW + margin + gap + badgeW;
-   PB("DIRBADGE", badgeXDist, margin, badgeW, btnH, dirT, CLR_BG_DEEP, dirC, Sc(11));
+   PB("DIRBADGE", badgeXDist, margin, badgeW, btnH, dirT, CLR_BG_DEEP, dirC, Sc(9));
    ObjectSetInteger(0, PFX + "B_DIRBADGE", OBJPROP_CORNER,       CORNER_RIGHT_UPPER);
    ObjectSetInteger(0, PFX + "B_DIRBADGE", OBJPROP_XDISTANCE,    badgeXDist);
    ObjectSetInteger(0, PFX + "B_DIRBADGE", OBJPROP_YDISTANCE,    margin);
@@ -534,38 +534,52 @@ void DibujarPanel()
    BorrarPanelTodo();
 
    double sc  = GetUIScale();
-   int    W   = Sc(220);
-   int    PAD = Sc(12);
-   int    HDR = Sc(36);
+   int    W   = Sc(180);   // mas compacto (era 220)
+   int    PAD = Sc(10);
+   int    HDR = Sc(30);
    int    x   = Sc(8);
    int    y   = Sc(8);
 
-   // Header siempre visible
-   PR("BG_HDR", x, y, W, HDR, CLR_BG_DEEP, CLR_BG_DEEP, 0);
-   int logoSz = Sc(22);
-   int logoY  = y + (HDR - logoSz) / 2;
-   PB("LOGO", x + PAD, logoY, logoSz, logoSz, "G", CLR_ACCENT, CLR_TEXT, Sc(11));
-   ObjectSetInteger(0, PFX + "B_LOGO", OBJPROP_BORDER_COLOR, CLR_ACCENT);
-   PL("HTIT", x + PAD + logoSz + Sc(8), y + (HDR - Sc(14))/2, "GRIDBOT", CLR_TEXT, Sc(10));
+   int rowH = Sc(16);
+   int gapS = Sc(6);
+   int sz8  = Sc(8);
+   int sz9  = Sc(9);
+   int sz10 = Sc(10);
+   int sz11 = Sc(11);
+   int COL  = Sc(82);
 
-   int minSz = Sc(22);
-   int minY  = y + (HDR - minSz) / 2;
    string minIcon = PanelMinimized ? "+" : "_";
-   PB("MINBTN", x + W - PAD - minSz, minY, minSz, minSz, minIcon, CLR_PANEL_HOV, CLR_TEXT, Sc(13));
+   int    minSz   = Sc(20);
+   int    minY    = y + (HDR - minSz) / 2;
+   int    logoSz  = Sc(20);
+   int    logoY   = y + (HDR - logoSz) / 2;
 
-   // Botones esquina derecha (siempre)
+   // PASO 1: Dibujar BG completo PRIMERO
+   int totalH = PanelMinimized ? HDR : Sc(280);
+   PR("BG", x, y, W, totalH, CLR_PANEL, CLR_BORDER_LT, 1);
+
+   // PASO 2: Header encima del BG
+   PR("BG_HDR", x, y, W, HDR, CLR_BG_DEEP, CLR_BG_DEEP, 0);
+   if(!PanelMinimized) PHR("HDR_LN", x, y + HDR - 1, W, CLR_BORDER);
+
+   // PASO 3: Elementos del header ENCIMA del BG_HDR
+   PB("LOGO", x + PAD, logoY, logoSz, logoSz, "G", CLR_ACCENT, CLR_TEXT, Sc(10));
+   ObjectSetInteger(0, PFX + "B_LOGO", OBJPROP_BORDER_COLOR, CLR_ACCENT);
+   PL("HTIT", x + PAD + logoSz + Sc(6), y + (HDR - Sc(13))/2, "GRIDBOT", CLR_TEXT, sz9);
+
+   // PASO 4: Boton minimizar — explicitamente al final para que quede encima
+   PB("MINBTN", x + W - PAD - minSz, minY, minSz, minSz, minIcon, CLR_PANEL_HOV, CLR_TEXT, Sc(11));
+
+   // PASO 5: Botones de esquina derecha del chart
    DibujarBotonesEsquina();
 
    if(PanelMinimized)
    {
-      // Solo header
-      PR("BG", x, y, W, HDR, CLR_PANEL, CLR_BORDER_LT, 1);
-      // Mover el header sobre el body
-      PR("BG_HDR", x, y, W, HDR, CLR_BG_DEEP, CLR_BG_DEEP, 0);
       ChartRedraw(0);
       return;
    }
 
+   // PASO 6: Body del panel
    string eStr; color eClr;
    switch(estado)
    {
@@ -581,26 +595,7 @@ void DibujarPanel()
    color  ganC = GananciaAcumulada >= 0 ? CLR_GREEN : CLR_RED;
    color  rskC = (RiesgoRealPct > p_Risk) ? CLR_RED : CLR_GREEN;
 
-   int rowH = Sc(18);
-   int gapS = Sc(8);
-   int sz8  = Sc(8);
-   int sz9  = Sc(9);
-   int sz10 = Sc(10);
-   int sz11 = Sc(11);
-   int COL  = Sc(98);
-
    int cy = y + HDR + gapS;
-
-   // Background calculado al final
-   PR("BG", x, y, W, Sc(300), CLR_PANEL, CLR_BORDER_LT, 1);
-   // Re-pintar header encima del BG
-   PR("BG_HDR", x, y, W, HDR, CLR_BG_DEEP, CLR_BG_DEEP, 0);
-   PHR("HDR_LN", x, y + HDR - 1, W, CLR_BORDER);
-   // Re-dibujar logo, titulo, minimizar encima
-   PB("LOGO", x + PAD, logoY, logoSz, logoSz, "G", CLR_ACCENT, CLR_TEXT, Sc(11));
-   ObjectSetInteger(0, PFX + "B_LOGO", OBJPROP_BORDER_COLOR, CLR_ACCENT);
-   PL("HTIT", x + PAD + logoSz + Sc(8), y + (HDR - Sc(14))/2, "GRIDBOT", CLR_TEXT, sz10);
-   PB("MINBTN", x + W - PAD - minSz, minY, minSz, minSz, minIcon, CLR_PANEL_HOV, CLR_TEXT, Sc(13));
 
    PL("ELAB", x + PAD, cy + 2, "ESTADO", CLR_TEXT_FAINT, sz8);
    PL("EVAL", x + COL, cy,     eStr,     eClr,           sz11);
@@ -635,21 +630,21 @@ void DibujarPanel()
    cy += rowH + Sc(4);
    PHR("S4", x + PAD, cy, W - PAD * 2, CLR_BORDER); cy += gapS;
 
-   int btnH = Sc(28);
+   int btnH = Sc(24);
    if(estado == PRECHECK || estado == STOPPED)
    {
-      PB("START", x + PAD, cy, W - PAD * 2, btnH, "INICIAR BOT", CLR_GREEN_DIM, CLR_TEXT, sz10);
+      PB("START", x + PAD, cy, W - PAD * 2, btnH, "INICIAR BOT", CLR_GREEN_DIM, CLR_TEXT, sz9);
    }
    else if(estado == PENDING)
    {
-      PB("CANCEL", x + PAD, cy, W - PAD * 2, btnH, "CANCELAR ORDEN", CLR_RED_DIM, CLR_TEXT, sz10);
+      PB("CANCEL", x + PAD, cy, W - PAD * 2, btnH, "CANCELAR", CLR_RED_DIM, CLR_TEXT, sz9);
    }
    else if(estado == ACTIVE || estado == PAUSED)
    {
-      int    bw   = (W - PAD * 2 - Sc(6)) / 2;
+      int    bw   = (W - PAD * 2 - Sc(4)) / 2;
       string ptxt = (estado == ACTIVE) ? "PAUSAR" : "REANUDAR";
-      PB("PAUSE", x + PAD,             cy, bw, btnH, ptxt,    CLR_ACCENT,  CLR_TEXT, sz9);
-      PB("STOP",  x + PAD + bw + Sc(6), cy, bw, btnH, "PARAR", CLR_RED_DIM, CLR_TEXT, sz9);
+      PB("PAUSE", x + PAD,             cy, bw, btnH, ptxt,    CLR_ACCENT,  CLR_TEXT, sz8);
+      PB("STOP",  x + PAD + bw + Sc(4), cy, bw, btnH, "PARAR", CLR_RED_DIM, CLR_TEXT, sz8);
    }
 
    PanelH = (cy + btnH + gapS) - y;
@@ -687,43 +682,44 @@ void CalcularLayoutConfig()
    int maxW = cw - 40;
    int maxH = ch - 40;
 
-   CfgW = MathMin((int)(700*sc), maxW); if(CfgW < 480) CfgW = 480;
-   CfgH = MathMin((int)(900*sc), maxH); if(CfgH < 540) CfgH = 540;
+   // Tamaño base mucho mas pequeño - se ve estetico, no invasivo
+   CfgW = MathMin((int)(520*sc), maxW); if(CfgW < 440) CfgW = 440;
+   CfgH = MathMin((int)(680*sc), maxH); if(CfgH < 480) CfgH = 480;
 
-   CfgCompact = (CfgH < (int)(860*sc));
+   CfgCompact = (CfgH < (int)(640*sc));
 
    if(CfgCompact)
    {
-      CFG_HDR_H        = Sc(82);
-      CFG_TABS_H       = Sc(46);
-      CFG_FOOT_H       = Sc(70);
-      CFG_BODY_PAD_TOP = Sc(22);
-      CFG_ROW_GAP      = Sc(80);
-      CFG_CARD_H_RANGE = Sc(150);
-      CFG_CARD_H_RISK  = Sc(220);
-      CFG_CARD_H_EXIT  = Sc(330);
-      CFG_PAD          = Sc(22);
+      CFG_HDR_H        = Sc(64);
+      CFG_TABS_H       = Sc(38);
+      CFG_FOOT_H       = Sc(56);
+      CFG_BODY_PAD_TOP = Sc(16);
+      CFG_ROW_GAP      = Sc(62);
+      CFG_CARD_H_RANGE = Sc(110);
+      CFG_CARD_H_RISK  = Sc(170);
+      CFG_CARD_H_EXIT  = Sc(240);
+      CFG_PAD          = Sc(18);
    }
    else
    {
-      CFG_HDR_H        = Sc(100);
-      CFG_TABS_H       = Sc(50);
-      CFG_FOOT_H       = Sc(80);
-      CFG_BODY_PAD_TOP = Sc(32);
-      CFG_ROW_GAP      = Sc(96);
-      CFG_CARD_H_RANGE = Sc(180);
-      CFG_CARD_H_RISK  = Sc(250);
-      CFG_CARD_H_EXIT  = Sc(420);
-      CFG_PAD          = Sc(28);
+      CFG_HDR_H        = Sc(74);
+      CFG_TABS_H       = Sc(42);
+      CFG_FOOT_H       = Sc(64);
+      CFG_BODY_PAD_TOP = Sc(20);
+      CFG_ROW_GAP      = Sc(72);
+      CFG_CARD_H_RANGE = Sc(130);
+      CFG_CARD_H_RISK  = Sc(190);
+      CFG_CARD_H_EXIT  = Sc(290);
+      CFG_PAD          = Sc(22);
    }
 }
 
 void CfgField(string id, int x, int y, int w, string label, string val, string suffix = "")
 {
-   int inputH = CfgCompact ? Sc(28) : Sc(32);
-   int gap    = CfgCompact ? Sc(20) : Sc(26);
-   int sufW   = CfgCompact ? Sc(46) : Sc(50);
-   int lblSz  = CfgCompact ? Sc(8)  : Sc(9);
+   int inputH = CfgCompact ? Sc(22) : Sc(26);
+   int gap    = CfgCompact ? Sc(16) : Sc(20);
+   int sufW   = CfgCompact ? Sc(38) : Sc(42);
+   int lblSz  = CfgCompact ? Sc(8)  : Sc(8);
    PL("CFG_" + id + "_L", x, y, label, CLR_TEXT_DIM, lblSz);
    if(suffix != "")
    {
@@ -779,16 +775,16 @@ void DibujarConfigDialog()
    PR("CFG_HDR",    x, y, W, HDR_H,    CLR_BG_DEEP, CLR_BG_DEEP,   0);
    PHR("CFG_HDR_LN", x, y + HDR_H - 1, W, CLR_BORDER);
 
-   int logoSize = CfgCompact ? Sc(34) : Sc(42);
+   int logoSize = CfgCompact ? Sc(28) : Sc(34);
    int logoY    = y + (HDR_H - logoSize) / 2;
-   PB("CFG_LOGO", x + PAD, logoY, logoSize, logoSize, "G", CLR_ACCENT, CLR_TEXT, CfgCompact ? Sc(16) : Sc(20));
+   PB("CFG_LOGO", x + PAD, logoY, logoSize, logoSize, "G", CLR_ACCENT, CLR_TEXT, CfgCompact ? Sc(13) : Sc(16));
    ObjectSetInteger(0, PFX + "B_CFG_LOGO", OBJPROP_BORDER_COLOR, CLR_ACCENT);
 
-   int titX  = x + PAD + logoSize + Sc(14);
-   int titSz = CfgCompact ? Sc(12) : Sc(14);
-   int subSz = CfgCompact ? Sc(9)  : Sc(10);
-   int titY  = y + HDR_H/2 - (CfgCompact ? Sc(16) : Sc(20));
-   int subY  = y + HDR_H/2 + (CfgCompact ? Sc(2)  : Sc(6));
+   int titX  = x + PAD + logoSize + Sc(10);
+   int titSz = CfgCompact ? Sc(10) : Sc(12);
+   int subSz = CfgCompact ? Sc(8)  : Sc(9);
+   int titY  = y + HDR_H/2 - (CfgCompact ? Sc(13) : Sc(16));
+   int subY  = y + HDR_H/2 + (CfgCompact ? Sc(1)  : Sc(4));
    PL("CFG_TIT", titX, titY, "GRIDBOT CONFIG",  CLR_TEXT,     titSz, "Arial");
    PL("CFG_SUB", titX, subY, "v3.4.2 " + _Symbol, CLR_TEXT_DIM, subSz);
 
@@ -801,18 +797,18 @@ void DibujarConfigDialog()
       case STOPPED: stBadge = "STOPPED"; stBadgeC = CLR_RED;    break;
       default:      stBadge = "READY";   stBadgeC = CLR_AMBER;  break;
    }
-   int badgeW = CfgCompact ? Sc(110) : Sc(130);
-   int badgeH = CfgCompact ? Sc(34)  : Sc(40);
+   int badgeW = CfgCompact ? Sc(86)  : Sc(100);
+   int badgeH = CfgCompact ? Sc(28)  : Sc(32);
    int badgeY = y + (HDR_H - badgeH) / 2;
-   int closeW = CfgCompact ? Sc(34)  : Sc(38);
+   int closeW = CfgCompact ? Sc(28)  : Sc(32);
    int closeH = badgeH;
    int minW   = closeW;
+   int gap    = Sc(6);
 
-   // X / Min / Badge layout: [Badge] [Min] [X]
-   PB("CFG_ST_T", x + W - PAD - closeW - Sc(8) - minW - Sc(8) - badgeW, badgeY, badgeW, badgeH, stBadge, CLR_BG_DEEP, stBadgeC, CfgCompact ? Sc(10) : Sc(12));
+   PB("CFG_ST_T", x + W - PAD - closeW - gap - minW - gap - badgeW, badgeY, badgeW, badgeH, stBadge, CLR_BG_DEEP, stBadgeC, CfgCompact ? Sc(9) : Sc(10));
    ObjectSetInteger(0, PFX + "B_CFG_ST_T", OBJPROP_BORDER_COLOR, stBadgeC);
-   PB("CFG_MIN",  x + W - PAD - closeW - Sc(8) - minW, badgeY, minW, closeH, "_", CLR_PANEL_HOV, CLR_TEXT, CfgCompact ? Sc(11) : Sc(13));
-   PB("CFG_X",    x + W - PAD - closeW,                badgeY, closeW, closeH, "X", CLR_RED_DIM, CLR_TEXT, CfgCompact ? Sc(11) : Sc(13));
+   PB("CFG_MIN",  x + W - PAD - closeW - gap - minW, badgeY, minW, closeH, "_", CLR_PANEL_HOV, CLR_TEXT, CfgCompact ? Sc(10) : Sc(11));
+   PB("CFG_X",    x + W - PAD - closeW,              badgeY, closeW, closeH, "X", CLR_RED_DIM, CLR_TEXT, CfgCompact ? Sc(10) : Sc(11));
 
    int tabsY = y + HDR_H;
    PR("CFG_TBG",    x, tabsY, W, TABS_H,  CLR_BG, CLR_BG, 0);
@@ -825,8 +821,8 @@ void DibujarConfigDialog()
       bool  act = (i == ConfigTab);
       color tbg = act ? CLR_TAB_ACTIVE : CLR_BG;
       color tcl = act ? CLR_TEXT       : CLR_TEXT_DIM;
-      PB("CFG_T" + IntegerToString(i), x + i * tw, tabsY, tw, TABS_H - 2, tabLabels[i], tbg, tcl, CfgCompact ? Sc(10) : Sc(11));
-      if(act) PR("CFG_T" + IntegerToString(i) + "_IND", x + i * tw + tw / 4, tabsY + TABS_H - Sc(5), tw / 2, Sc(3), CLR_ACCENT, CLR_ACCENT, 0);
+      PB("CFG_T" + IntegerToString(i), x + i * tw, tabsY, tw, TABS_H - 2, tabLabels[i], tbg, tcl, CfgCompact ? Sc(9) : Sc(10));
+      if(act) PR("CFG_T" + IntegerToString(i) + "_IND", x + i * tw + tw / 4, tabsY + TABS_H - Sc(4), tw / 2, Sc(3), CLR_ACCENT, CLR_ACCENT, 0);
       else    DelObj("R_CFG_T" + IntegerToString(i) + "_IND");
    }
 
@@ -842,14 +838,14 @@ void DibujarConfigDialog()
    PHR("CFG_FT_LN", x, fy, W, CLR_BORDER);
    PR("CFG_FT",     x, fy + 1, W, FOOTER_H - 1, CLR_BG_DEEP, CLR_BG_DEEP, 0);
 
-   int btnGap    = Sc(16);
+   int btnGap    = Sc(12);
    int btnTotalW = W - PAD * 2;
    int cancelW   = (btnTotalW - btnGap) / 2;
    int applyW    = btnTotalW - cancelW - btnGap;
-   int btnH      = CfgCompact ? Sc(34) : Sc(40);
+   int btnH      = CfgCompact ? Sc(28) : Sc(32);
    int btnY      = fy + (FOOTER_H - btnH) / 2;
-   PB("CFG_CANCEL", x + PAD,                    btnY, cancelW, btnH, "CANCELAR", CLR_PANEL_HOV, CLR_TEXT, CfgCompact ? Sc(10) : Sc(11));
-   PB("CFG_APPLY",  x + PAD + cancelW + btnGap, btnY, applyW,  btnH, "APLICAR",  CLR_ACCENT,    CLR_TEXT, CfgCompact ? Sc(11) : Sc(12));
+   PB("CFG_CANCEL", x + PAD,                    btnY, cancelW, btnH, "CANCELAR", CLR_PANEL_HOV, CLR_TEXT, CfgCompact ? Sc(9) : Sc(10));
+   PB("CFG_APPLY",  x + PAD + cancelW + btnGap, btnY, applyW,  btnH, "APLICAR",  CLR_ACCENT,    CLR_TEXT, CfgCompact ? Sc(10) : Sc(11));
    ChartRedraw(0);
 }
 
