@@ -709,7 +709,7 @@ void CalcularLayoutConfig()
 
    // Tamaño profesional compacto
    CfgW = MathMin((int)(460*sc), maxW); if(CfgW < 400) CfgW = 400;
-   CfgH = MathMin((int)(560*sc), maxH); if(CfgH < 420) CfgH = 420;
+   CfgH = MathMin((int)(580*sc), maxH); if(CfgH < 420) CfgH = 420;
 
    CfgCompact = true;  // siempre compacto para look profesional consistente
 
@@ -719,7 +719,7 @@ void CalcularLayoutConfig()
    CFG_BODY_PAD_TOP = Sc(14);
    CFG_ROW_GAP      = Sc(56);
    CFG_CARD_H_RANGE = Sc(96);
-   CFG_CARD_H_RISK  = Sc(152);
+   CFG_CARD_H_RISK  = Sc(168);
    CFG_CARD_H_EXIT  = Sc(220);
    CFG_PAD          = Sc(16);
 }
@@ -963,15 +963,28 @@ void DibujarBodyRiesgo(int x, int y, int w, int hAvail)
    PR("CFG_RSK_DOT", x + padIn,          cyTop + Sc(15), Sc(7), Sc(7), excedido ? CLR_RED : CLR_GREEN, excedido ? CLR_RED : CLR_GREEN, 0);
    PL("CFG_RSK_HD",  x + padIn + Sc(14), cyTop + Sc(11), excedido ? "RIESGO EXCEDIDO" : "RIESGO OK", excedido ? CLR_RED : CLR_GREEN, Sc(9));
 
+   // Info de rejillas reales vs configuradas
+   int totalNiveles = ArraySize(GridLevels);
+   bool maxExcedido = (p_MaxOrd > totalNiveles);
+   string infoNiv = IntegerToString(totalNiveles) + " niveles / " + IntegerToString(p_MaxOrd) + " max";
+   color  infoCol = maxExcedido ? CLR_AMBER : CLR_TEXT_DIM;
+   PL("CFG_RSK_NIV", x + padIn, cyTop + Sc(28), infoNiv, infoCol, Sc(8));
+
    if(excedido)
    {
       double over = (RiesgoRealPct / MathMax(p_Risk, 0.01) - 1.0) * 100.0;
       PR("CFG_RSK_BG", x + w - Sc(72), cyTop + Sc(11), Sc(60), Sc(18), CLR_RED_DIM, CLR_RED_DIM, 0);
       PL("CFG_RSK_BT", x + w - Sc(66), cyTop + Sc(15), "+" + DoubleToString(over, 0) + "%", CLR_RED, Sc(8));
    }
+   else if(maxExcedido)
+   {
+      // Indicador ambar: max ordenes mayor que niveles disponibles
+      PR("CFG_RSK_BG", x + w - Sc(72), cyTop + Sc(11), Sc(60), Sc(18), CLR_AMBER_DIM, CLR_AMBER_DIM, 0);
+      PL("CFG_RSK_BT", x + w - Sc(66), cyTop + Sc(15), "tope " + IntegerToString(totalNiveles), CLR_AMBER, Sc(8));
+   }
 
    int statW  = (w - padIn*2 - Sc(20)) / 3;
-   int statsY = cyTop + Sc(40);
+   int statsY = cyTop + Sc(48);
    PL("CFG_RSK_S1L", x + padIn,                      statsY,         "REAL %",                                  CLR_TEXT_FAINT, Sc(8));
    PL("CFG_RSK_S1V", x + padIn,                      statsY + Sc(16), DoubleToString(RiesgoRealPct, 2),          excedido ? CLR_RED : CLR_GREEN, Sc(12));
    PL("CFG_RSK_S2L", x + padIn + statW + Sc(10),     statsY,         "PERDIDA",                                 CLR_TEXT_FAINT, Sc(8));
@@ -979,7 +992,7 @@ void DibujarBodyRiesgo(int x, int y, int w, int hAvail)
    PL("CFG_RSK_S3L", x + padIn + (statW+Sc(10))*2,   statsY,         "SEGURO",                                  CLR_TEXT_FAINT, Sc(8));
    PL("CFG_RSK_S3V", x + padIn + (statW+Sc(10))*2,   statsY + Sc(16), IntegerToString(MaxOrdersSafe) + " rej",   CLR_AMBER, Sc(12));
 
-   int barY = cyTop + Sc(96);
+   int barY = cyTop + Sc(104);
    if(barY + Sc(24) <= cyTop + cardH - Sc(8))
    {
       PL("CFG_RSK_BL1", x + padIn,              barY, "0%", CLR_TEXT_FAINT, Sc(7));
@@ -1934,9 +1947,28 @@ void ResetCacheEdits()
 int OnInit()
 {
    Print("================================================");
-   Print("GridBot v3.4.3 | Responsive + Minimizar | ", _Symbol);
+   Print("GridBot v3.4.3 | Responsive + Persistente | ", _Symbol);
    Print("================================================");
+
+   // Primero cargar parametros desde inputs (defaults)
    CargarParametros();
+
+   // Intentar restaurar estado guardado de la sesion anterior (mismo simbolo+magic)
+   bool restaurado = CargarEstado();
+   if(restaurado)
+   {
+      PrintFormat(">>> Estado restaurado: %s | Tech=%s Piso=%s Trig=%s",
+                  estado==ACTIVE?"ACTIVE":estado==PENDING?"PENDING":estado==PAUSED?"PAUSED":estado==STOPPED?"STOPPED":"PRECHECK",
+                  DoubleToString(p_Techo,_Digits),
+                  DoubleToString(p_Piso,_Digits),
+                  DoubleToString(p_Trigger,_Digits));
+   }
+   else
+   {
+      Print(">>> Estado nuevo desde inputs");
+      estado = PRECHECK;
+   }
+
    if(!ValidarInputs()) return INIT_PARAMETERS_INCORRECT;
 
    CalcularRejillas(); CalcularRiesgo();
@@ -1947,11 +1979,28 @@ int OnInit()
    ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
    LastChartW = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
    LastChartH = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-   EventSetMillisecondTimer(200);  // timer para auto-apply de OBJ_EDIT
-   estado = PRECHECK;
+   EventSetMillisecondTimer(200);
+
+   // Si se restauro un estado activo, verificar que las ordenes existan en el broker
+   if(restaurado && (estado == ACTIVE || estado == PAUSED || estado == PENDING))
+   {
+      int existentes = EscanearOrdenesExistentes();
+      if(existentes > 0)
+      {
+         RejillasActivas = existentes;
+         PrintFormat(">>> Retomando con %d ordenes existentes en el broker", existentes);
+      }
+      else if(estado == ACTIVE || estado == PAUSED)
+      {
+         // No hay ordenes — el bot pensaba que estaba activo pero no hay nada
+         Print(">>> No se encontraron ordenes — volviendo a PRECHECK");
+         estado = PRECHECK;
+      }
+   }
+
    PrintFormat("Risk: Real=%.1f%% ($%.2f) | Seguro=%d rejillas", RiesgoRealPct, RiesgoRealUSD, MaxOrdersSafe);
    DibujarLineasGrid(); DibujarPanel();
-   Print(">>> Panel a la izquierda | CONFIG arriba derecha | minimizar con boton _");
+   Print(">>> Panel a la izquierda | CONFIG arriba derecha | persistencia por symbol+magic");
    return INIT_SUCCEEDED;
 }
 
@@ -1974,6 +2023,30 @@ void OnDeinit(const int reason)
    EventKillTimer();
    ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, false);
    ChartSetInteger(0, CHART_MOUSE_SCROLL, true);
+
+   // Guardar estado SOLO en casos donde el bot va a volver a iniciar
+   // REASON_CHARTCHANGE = cambio de timeframe/simbolo
+   // REASON_PARAMETERS = cambio de inputs
+   // REASON_RECOMPILE  = recompilacion del codigo
+   // REASON_TEMPLATE   = aplicar template
+   // REASON_ACCOUNT    = cambio de cuenta
+   // En estos casos guardamos el estado para restaurar
+   if(reason == REASON_CHARTCHANGE ||
+      reason == REASON_PARAMETERS  ||
+      reason == REASON_RECOMPILE   ||
+      reason == REASON_TEMPLATE    ||
+      reason == REASON_ACCOUNT)
+   {
+      GuardarEstado();
+      Print(">>> Estado guardado (motivo: ", reason, ") - se restaurara automaticamente");
+   }
+   else
+   {
+      // REASON_REMOVE / REASON_CLOSE / REASON_PROGRAM = quitar bot del chart definitivamente
+      BorrarEstadoGuardado();
+      Print(">>> Estado borrado (motivo: ", reason, ") - bot eliminado");
+   }
+
    BorrarTodo();
    PrintFormat("GridBot v3.4.3 fin. Estado=%d | Acumulado=%.2f USD", estado, GananciaAcumulada);
 }
