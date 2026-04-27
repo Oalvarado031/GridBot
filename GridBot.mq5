@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
 //| GridBot.mq5                                                      |
 //| Bot de Grid Geometrico Dinamico para Forex (MT5)                 |
-//| v3.4 — UI Rediseñada (Modern Dark)                               |
+//| v3.4.1 — UI Modern Dark + Responsive (Win/Mac)                   |
 //+------------------------------------------------------------------+
 #property copyright "Oscar Alvarado"
-#property version   "3.40"
+#property version   "3.41"
 #property strict
 #include <Trade/Trade.mqh>
 CTrade trade;
@@ -77,12 +77,24 @@ int  PanelX_cur, PanelY_cur, PanelW = 300, PanelH = 320;
 bool Dragging = false;
 int  DragOffX = 0, DragOffY = 0;
 
-// Config dialog
+// Config dialog (responsive)
 bool ConfigVisible = false;
-int  ConfigTab     = 0;   // 0=Rango, 1=Riesgo, 2=Salidas
+int  ConfigTab     = 0;        // 0=Rango, 1=Riesgo, 2=Salidas
 int  CfgX, CfgY;
-const int CfgW = 700;
-const int CfgH = 960;
+int  CfgW = 700;
+int  CfgH = 960;
+bool CfgCompact = false;
+
+// Layout cache (recalculado en CalcularLayoutConfig)
+int  CFG_HDR_H        = 110;
+int  CFG_TABS_H       = 54;
+int  CFG_FOOT_H       = 88;
+int  CFG_BODY_PAD_TOP = 40;
+int  CFG_ROW_GAP      = 110;
+int  CFG_CARD_H_RANGE = 200;
+int  CFG_CARD_H_RISK  = 280;
+int  CFG_CARD_H_EXIT  = 480;
+int  CFG_PAD          = 32;
 
 //+------------------------------------------------------------------+
 //| PALETA DE COLORES — MODERN DARK                                  |
@@ -106,7 +118,6 @@ const int CfgH = 960;
 #define CLR_AMBER       C'245,158,11'
 #define CLR_AMBER_DIM   C'180,83,9'
 
-// Alias de compatibilidad
 #define CLR_MINT        CLR_GREEN
 #define CLR_MINT_ACT    C'34,220,110'
 #define CLR_MINT_DIM    C'21,90,40'
@@ -115,16 +126,6 @@ const int CfgH = 960;
 #define CLR_RANGO       CLR_AMBER
 #define CLR_TRIGGER     CLR_ACCENT
 #define CLR_WARN        CLR_AMBER
-#define CLR_HEADER      CLR_BG_DEEP
-#define CLR_SEP         CLR_BORDER
-#define CLR_WHITE       CLR_TEXT
-#define CLR_EDIT_BG     CLR_BG_DEEP
-#define CLR_EDIT_BORD   CLR_BORDER
-#define CLR_BTN_GREEN   C'21,128,61'
-#define CLR_BTN_RED     C'153,27,27'
-#define CLR_BTN_BLUE    CLR_ACCENT
-#define CLR_BTN_GRAY    CLR_PANEL_HOV
-#define CLR_BTN_APPLY   CLR_ACCENT
 
 //+------------------------------------------------------------------+
 //| HELPERS                                                          |
@@ -346,11 +347,11 @@ void PE(string id, int x, int y, int w, int h, string val)
 void PHR(string id, int x, int y, int w, color clr)  { PR(id, x, y, w, 1, clr, clr, 0); }
 void PVR(string id, int x, int y, int h, color clr)  { PR(id, x, y, 1, h, clr, clr, 0); }
 
-string GetEdit(string id) { return ObjectGetString(0, PFX + "E_" + id, OBJPROP_TEXT); }
+string GetEdit(string id)  { return ObjectGetString(0, PFX + "E_" + id, OBJPROP_TEXT); }
 void   DelObj(string full) { ObjectDelete(0, PFX + full); }
 
 //+------------------------------------------------------------------+
-//| SISTEMA DE ALERTAS POPUP                                         |
+//| SISTEMA DE ALERTAS POPUP (responsive)                            |
 //+------------------------------------------------------------------+
 void MostrarAlerta(string title, string msg, string subMsg, AlertType tipo)
 {
@@ -413,13 +414,13 @@ void DibujarAlerta()
 {
    if(!AlertaVisible) { BorrarAlerta(); return; }
 
-   int W = 700, H = 340;
    int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
    int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-   int x  = (cw - W) / 2;
-   int y  = (ch - H) / 2;
-   if(x < 0) x = 10;
-   if(y < 0) y = 10;
+
+   int W = MathMin(700, cw - 40);  if(W < 360) W = 360;
+   int H = MathMin(340, ch - 40);  if(H < 240) H = 240;
+   int x = (cw - W) / 2;           if(x < 10) x = 10;
+   int y = (ch - H) / 2;           if(y < 10) y = 10;
 
    color  iconC;
    string iconText;
@@ -431,36 +432,49 @@ void DibujarAlerta()
       default:            iconC = CLR_ACCENT; iconText = "i";  break;
    }
 
-   int PAD = 24;
-   PR("ALR_BG",     x, y, W, H,  CLR_PANEL,    CLR_ACCENT,  2);
-   PR("ALR_HDR",    x, y, W, 64, CLR_BG_DEEP,  CLR_BG_DEEP, 0);
-   PHR("ALR_HDR_LN", x, y + 63, W, CLR_ACCENT);
+   bool compact = (H < 320);
+   int  PAD     = compact ? 18 : 24;
+   int  hdrH    = compact ? 52 : 64;
+   int  footerSpace = compact ? 50 : 58;
+   int  okBtnH  = compact ? 34 : 40;
 
-   PB("ALR_ICN", x + PAD, y + 18, 28, 28, iconText, iconC, CLR_TEXT, 14);
+   PR("ALR_BG",     x, y, W, H,    CLR_PANEL,    CLR_ACCENT,  2);
+   PR("ALR_HDR",    x, y, W, hdrH, CLR_BG_DEEP,  CLR_BG_DEEP, 0);
+   PHR("ALR_HDR_LN", x, y + hdrH - 1, W, CLR_ACCENT);
+
+   int icnY = y + (hdrH - 28) / 2;
+   PB("ALR_ICN", x + PAD, icnY, 28, 28, iconText, iconC, CLR_TEXT, 14);
    ObjectSetInteger(0, PFX + "B_ALR_ICN", OBJPROP_BORDER_COLOR, iconC);
 
    int titX = x + PAD + 40;
    int titW = W - PAD * 2 - 40 - 40;
-   PB("ALR_TIT", titX, y + 18, titW, 28, AlertaTitle, CLR_BG_DEEP, CLR_TEXT, 12);
+   PB("ALR_TIT", titX, icnY, titW, 28, AlertaTitle, CLR_BG_DEEP, CLR_TEXT, 12);
    ObjectSetInteger(0, PFX + "B_ALR_TIT", OBJPROP_BORDER_COLOR, CLR_BG_DEEP);
 
-   PB("ALR_X", x + W - PAD - 30, y + 18, 30, 28, "X", CLR_RED_DIM, CLR_TEXT, 12);
+   PB("ALR_X", x + W - PAD - 30, icnY, 30, 28, "X", CLR_RED_DIM, CLR_TEXT, 12);
 
-   int by    = y + 88;
+   int by    = y + hdrH + (compact ? 16 : 24);
    int textW = W - PAD * 2;
    DibujarTextoLargo("ALR_MSG", x + PAD, by, textW - 12, AlertaMsg, CLR_TEXT, 11, 22);
 
    if(StringLen(AlertaSubMsg) > 0)
    {
-      int subY = by + 60;
-      PR("ALR_SBOX", x + PAD, subY, textW, 64, CLR_BG_DEEP, CLR_BORDER, 1);
-      PR("ALR_SIND", x + PAD, subY, 4, 64, iconC, iconC, 0);
-      DibujarTextoLargo("ALR_SMSG", x + PAD + 16, subY + 12, textW - 44, AlertaSubMsg, CLR_TEXT_DIM, 10, 18);
+      int subY = by + (compact ? 50 : 60);
+      int subH = compact ? 52 : 64;
+      int maxSubBottom = y + H - footerSpace - 8;
+      if(subY + subH > maxSubBottom) subH = maxSubBottom - subY;
+      if(subH > 24)
+      {
+         PR("ALR_SBOX", x + PAD, subY, textW, subH, CLR_BG_DEEP, CLR_BORDER, 1);
+         PR("ALR_SIND", x + PAD, subY, 4, subH, iconC, iconC, 0);
+         DibujarTextoLargo("ALR_SMSG", x + PAD + 16, subY + 12, textW - 44, AlertaSubMsg, CLR_TEXT_DIM, 10, 18);
+      }
    }
 
-   int btnY = y + H - 58;
+   int btnY = y + H - footerSpace;
    PHR("ALR_BTN_LN", x, btnY - 1, W, CLR_BORDER);
-   PB("ALR_OK", x + W / 2 - 110, btnY + 10, 220, 40, "ENTENDIDO", CLR_ACCENT, CLR_TEXT, 13);
+   int okW = MathMin(220, W - PAD * 2);
+   PB("ALR_OK", x + (W - okW) / 2, btnY + (footerSpace - okBtnH) / 2, okW, okBtnH, "ENTENDIDO", CLR_ACCENT, CLR_TEXT, 13);
    ChartRedraw(0);
 }
 
@@ -563,8 +577,8 @@ void DibujarPanel()
    {
       int    bw   = (W - PAD * 2 - 8) / 2;
       string ptxt = (estado == ACTIVE) ? "PAUSAR" : "REANUDAR";
-      PB("PAUSE", x + PAD,          cy, bw, 36, ptxt,   CLR_BTN_BLUE, CLR_TEXT, 10);
-      PB("STOP",  x + PAD + bw + 8, cy, bw, 36, "PARAR", CLR_RED_DIM,  CLR_TEXT, 10);
+      PB("PAUSE", x + PAD,          cy, bw, 36, ptxt,   CLR_ACCENT,  CLR_TEXT, 10);
+      PB("STOP",  x + PAD + bw + 8, cy, bw, 36, "PARAR", CLR_RED_DIM, CLR_TEXT, 10);
       DelObj("B_START"); DelObj("B_CANCEL");
    }
 
@@ -574,7 +588,7 @@ void DibujarPanel()
 }
 
 //+------------------------------------------------------------------+
-//| VENTANA DE CONFIGURACION                                         |
+//| VENTANA DE CONFIGURACION (RESPONSIVE)                            |
 //+------------------------------------------------------------------+
 void BorrarConfigDialog()
 {
@@ -590,41 +604,95 @@ void BorrarConfigDialog()
    ChartRedraw(0);
 }
 
+// Ajusta tamaño y modo (compact/full) según viewport actual
+void CalcularLayoutConfig()
+{
+   int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+
+   int maxW = cw - 40;
+   int maxH = ch - 40;
+
+   CfgW = MathMin(700, maxW);  if(CfgW < 480) CfgW = 480;
+   CfgH = MathMin(960, maxH);  if(CfgH < 540) CfgH = 540;
+
+   CfgCompact = (CfgH < 920);
+
+   if(CfgCompact)
+   {
+      CFG_HDR_H        = 86;
+      CFG_TABS_H       = 46;
+      CFG_FOOT_H       = 70;
+      CFG_BODY_PAD_TOP = 22;
+      CFG_ROW_GAP      = 80;
+      CFG_CARD_H_RANGE = 150;
+      CFG_CARD_H_RISK  = 220;
+      CFG_CARD_H_EXIT  = 350;
+      CFG_PAD          = 24;
+   }
+   else
+   {
+      CFG_HDR_H        = 110;
+      CFG_TABS_H       = 54;
+      CFG_FOOT_H       = 88;
+      CFG_BODY_PAD_TOP = 40;
+      CFG_ROW_GAP      = 110;
+      CFG_CARD_H_RANGE = 200;
+      CFG_CARD_H_RISK  = 280;
+      CFG_CARD_H_EXIT  = 480;
+      CFG_PAD          = 32;
+   }
+}
+
 void CfgField(string id, int x, int y, int w, string label, string val, string suffix = "")
 {
+   int inputH = CfgCompact ? 30 : 36;
+   int gap    = CfgCompact ? 22 : 28;
    PL("CFG_" + id + "_L", x, y, label, CLR_TEXT_DIM, 9);
    if(suffix != "")
    {
       int sufW = 52;
-      PE("CFG_" + id,         x,             y + 28, w - sufW - 2, 36, val);
-      PR("CFG_" + id + "_SB", x + w - sufW,  y + 28, sufW, 36, CLR_BG_DEEP, CLR_BORDER, 1);
-      PL("CFG_" + id + "_S",  x + w - sufW + 12, y + 38, suffix, CLR_TEXT_FAINT, 9);
+      PE("CFG_" + id,         x,             y + gap, w - sufW - 2, inputH, val);
+      PR("CFG_" + id + "_SB", x + w - sufW,  y + gap, sufW, inputH, CLR_BG_DEEP, CLR_BORDER, 1);
+      PL("CFG_" + id + "_S",  x + w - sufW + 12, y + gap + (inputH - 14)/2 + 2, suffix, CLR_TEXT_FAINT, 9);
    }
    else
-      PE("CFG_" + id, x, y + 28, w, 36, val);
+      PE("CFG_" + id, x, y + gap, w, inputH, val);
 }
 
 void DibujarConfigDialog()
 {
    if(!ConfigVisible) { BorrarConfigDialog(); return; }
 
+   CalcularLayoutConfig();
+
    int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
    int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-   CfgX = (cw - CfgW) / 2; if(CfgX < 0) CfgX = 10;
-   CfgY = (ch - CfgH) / 2; if(CfgY < 0) CfgY = 10;
+   CfgX = (cw - CfgW) / 2; if(CfgX < 10) CfgX = 10;
+   CfgY = (ch - CfgH) / 2; if(CfgY < 10) CfgY = 10;
 
    int x = CfgX, y = CfgY, W = CfgW, H = CfgH;
-   int PAD = 32, FOOTER_H = 88;
+   int PAD      = CFG_PAD;
+   int FOOTER_H = CFG_FOOT_H;
+   int HDR_H    = CFG_HDR_H;
+   int TABS_H   = CFG_TABS_H;
 
-   PR("CFG_BG",     x, y, W, H,   CLR_PANEL,   CLR_BORDER_LT, 1);
-   PR("CFG_HDR",    x, y, W, 110, CLR_BG_DEEP, CLR_BG_DEEP,   0);
-   PHR("CFG_HDR_LN", x, y + 109, W, CLR_BORDER);
+   PR("CFG_BG",     x, y, W, H,        CLR_PANEL,   CLR_BORDER_LT, 1);
+   PR("CFG_HDR",    x, y, W, HDR_H,    CLR_BG_DEEP, CLR_BG_DEEP,   0);
+   PHR("CFG_HDR_LN", x, y + HDR_H - 1, W, CLR_BORDER);
 
-   PB("CFG_LOGO", x + PAD, y + 31, 48, 48, "G", CLR_ACCENT, CLR_TEXT, 22);
+   int logoSize = CfgCompact ? 38 : 48;
+   int logoY    = y + (HDR_H - logoSize) / 2;
+   PB("CFG_LOGO", x + PAD, logoY, logoSize, logoSize, "G", CLR_ACCENT, CLR_TEXT, CfgCompact ? 18 : 22);
    ObjectSetInteger(0, PFX + "B_CFG_LOGO", OBJPROP_BORDER_COLOR, CLR_ACCENT);
 
-   PL("CFG_TIT", x + PAD + 82, y + 30, "GRIDBOT CONFIG", CLR_TEXT,     15, "Arial");
-   PL("CFG_SUB", x + PAD + 82, y + 68, "v3.4 " + _Symbol, CLR_TEXT_DIM, 11);
+   int titX  = x + PAD + logoSize + 14;
+   int titSz = CfgCompact ? 13 : 15;
+   int subSz = CfgCompact ? 10 : 11;
+   int titY  = y + HDR_H/2 - (CfgCompact ? 18 : 24);
+   int subY  = y + HDR_H/2 + (CfgCompact ? 2 : 8);
+   PL("CFG_TIT", titX, titY, "GRIDBOT CONFIG",  CLR_TEXT,     titSz, "Arial");
+   PL("CFG_SUB", titX, subY, "v3.4 " + _Symbol, CLR_TEXT_DIM, subSz);
 
    string stBadge;
    color  stBadgeC;
@@ -636,14 +704,19 @@ void DibujarConfigDialog()
       case STOPPED: stBadge = "STOPPED"; stBadgeC = CLR_RED;    break;
       default:      stBadge = "READY";   stBadgeC = CLR_AMBER;  break;
    }
-   PB("CFG_ST_T", x + W - 220, y + 38, 140, 44, stBadge, CLR_BG_DEEP, stBadgeC, 13);
+   int badgeW = CfgCompact ? 120 : 140;
+   int badgeH = CfgCompact ? 36  : 44;
+   int badgeY = y + (HDR_H - badgeH) / 2;
+   int closeW = CfgCompact ? 36  : 40;
+   int closeH = badgeH;
+   PB("CFG_ST_T", x + W - closeW - 28 - badgeW, badgeY, badgeW, badgeH, stBadge, CLR_BG_DEEP, stBadgeC, CfgCompact ? 11 : 13);
    ObjectSetInteger(0, PFX + "B_CFG_ST_T", OBJPROP_BORDER_COLOR, stBadgeC);
-   PR("CFG_ST_DOT", x + W - 210, y + 55, 10, 10, stBadgeC, stBadgeC, 0);
-   PB("CFG_X", x + W - 66, y + 38, 40, 44, "X", CLR_RED_DIM, CLR_TEXT, 14);
+   PR("CFG_ST_DOT", x + W - closeW - 28 - badgeW + 10, badgeY + (badgeH - 10)/2, 10, 10, stBadgeC, stBadgeC, 0);
+   PB("CFG_X", x + W - closeW - 16, badgeY, closeW, closeH, "X", CLR_RED_DIM, CLR_TEXT, CfgCompact ? 12 : 14);
 
-   int tabsY = y + 110;
-   PR("CFG_TBG",    x, tabsY, W, 54,  CLR_BG, CLR_BG, 0);
-   PHR("CFG_TBG_LN", x, tabsY + 53, W, CLR_BORDER);
+   int tabsY = y + HDR_H;
+   PR("CFG_TBG",    x, tabsY, W, TABS_H,  CLR_BG, CLR_BG, 0);
+   PHR("CFG_TBG_LN", x, tabsY + TABS_H - 1, W, CLR_BORDER);
 
    string tabLabels[3] = {"RANGO", "RIESGO", "SALIDAS"};
    int tw = W / 3;
@@ -652,16 +725,20 @@ void DibujarConfigDialog()
       bool  act = (i == ConfigTab);
       color tbg = act ? CLR_TAB_ACTIVE : CLR_BG;
       color tcl = act ? CLR_TEXT       : CLR_TEXT_DIM;
-      PB("CFG_T" + IntegerToString(i), x + i * tw, tabsY, tw, 52, tabLabels[i], tbg, tcl, 12);
-      if(act) PR("CFG_T" + IntegerToString(i) + "_IND", x + i * tw + tw / 4, tabsY + 49, tw / 2, 4, CLR_ACCENT, CLR_ACCENT, 0);
+      PB("CFG_T" + IntegerToString(i), x + i * tw, tabsY, tw, TABS_H - 2, tabLabels[i], tbg, tcl, CfgCompact ? 11 : 12);
+      if(act) PR("CFG_T" + IntegerToString(i) + "_IND", x + i * tw + tw / 4, tabsY + TABS_H - 5, tw / 2, 4, CLR_ACCENT, CLR_ACCENT, 0);
       else    DelObj("R_CFG_T" + IntegerToString(i) + "_IND");
    }
 
-   int by = tabsY + 54;
-   if     (ConfigTab == 0) DibujarBodyRango(x + PAD, by + 40, W - PAD * 2);
-   else if(ConfigTab == 1) DibujarBodyRiesgo(x + PAD, by + 40, W - PAD * 2);
-   else                    DibujarBodySalidas(x + PAD, by + 40, W - PAD * 2);
+   int by    = tabsY + TABS_H + CFG_BODY_PAD_TOP;
+   int bodyW = W - PAD * 2;
+   int bodyMaxH = (y + H - FOOTER_H) - by - 8;
 
+   if     (ConfigTab == 0) DibujarBodyRango(x + PAD,  by, bodyW, bodyMaxH);
+   else if(ConfigTab == 1) DibujarBodyRiesgo(x + PAD, by, bodyW, bodyMaxH);
+   else                    DibujarBodySalidas(x + PAD, by, bodyW, bodyMaxH);
+
+   // Footer SIEMPRE visible (fix principal del bug Windows)
    int fy = y + H - FOOTER_H;
    PHR("CFG_FT_LN", x, fy, W, CLR_BORDER);
    PR("CFG_FT",     x, fy + 1, W, FOOTER_H - 1, CLR_BG_DEEP, CLR_BG_DEEP, 0);
@@ -670,173 +747,223 @@ void DibujarConfigDialog()
    int btnTotalW = W - PAD * 2;
    int cancelW   = (btnTotalW - btnGap) / 2;
    int applyW    = btnTotalW - cancelW - btnGap;
-   PB("CFG_CANCEL", x + PAD,                      fy + 24, cancelW, 44, "CANCELAR", CLR_PANEL_HOV, CLR_TEXT, 12);
-   PB("CFG_APPLY",  x + PAD + cancelW + btnGap,   fy + 24, applyW,  44, "APLICAR",  CLR_ACCENT,    CLR_TEXT, 13);
+   int btnH      = CfgCompact ? 36 : 44;
+   int btnY      = fy + (FOOTER_H - btnH) / 2;
+   PB("CFG_CANCEL", x + PAD,                    btnY, cancelW, btnH, "CANCELAR", CLR_PANEL_HOV, CLR_TEXT, CfgCompact ? 11 : 12);
+   PB("CFG_APPLY",  x + PAD + cancelW + btnGap, btnY, applyW,  btnH, "APLICAR",  CLR_ACCENT,    CLR_TEXT, CfgCompact ? 12 : 13);
    ChartRedraw(0);
 }
 
 //+------------------------------------------------------------------+
-//| BODY RANGO                                                       |
+//| BODY RANGO (responsive)                                          |
 //+------------------------------------------------------------------+
-void DibujarBodyRango(int x, int y, int w)
+void DibujarBodyRango(int x, int y, int w, int hAvail)
 {
    int colW    = (w - 16) / 2;
-   int rowGap  = 110;
+   int rowGap  = CFG_ROW_GAP;
+   int dirH    = CfgCompact ? 30 : 36;
+   int dirYofs = CfgCompact ? 60 : 80;
 
    PL("CFG_DIR_L", x, y, "DIRECCION", CLR_TEXT_DIM, 9);
    int  dirBtnW = (w - 12) / 2;
    bool isLong  = (p_Direccion == GRID_LONG);
-   PB("CFG_DIR_LONG",  x,              y + 22, dirBtnW, 36, "LONG",  isLong ? CLR_GREEN_DIM  : CLR_PANEL_HOV, CLR_TEXT, 11);
-   PB("CFG_DIR_SHORT", x + dirBtnW + 12, y + 22, dirBtnW, 36, "SHORT", isLong ? CLR_PANEL_HOV : CLR_RED_DIM,   CLR_TEXT, 11);
-   y += 80;
+   PB("CFG_DIR_LONG",  x,                y + 22, dirBtnW, dirH, "LONG",  isLong ? CLR_GREEN_DIM  : CLR_PANEL_HOV, CLR_TEXT, 11);
+   PB("CFG_DIR_SHORT", x + dirBtnW + 12, y + 22, dirBtnW, dirH, "SHORT", isLong ? CLR_PANEL_HOV : CLR_RED_DIM,    CLR_TEXT, 11);
+   int yStart = y;
+   y += dirYofs;
 
-   CfgField("E_TECHO",   x,          y,           colW, "TECHO",              DoubleToString(p_Techo,   _Digits));
-   CfgField("E_PISO",    x + colW + 16, y,         colW, "PISO",               DoubleToString(p_Piso,    _Digits));
-   CfgField("E_TRIGGER", x,          y + rowGap,   w,    "TRIGGER DE ENTRADA", DoubleToString(p_Trigger, _Digits));
-   CfgField("E_G",       x,          y + rowGap*2, colW, "G % GEOMETRIA",      DoubleToString(p_G, 4), "%");
-   CfgField("E_VOL",     x + colW + 16, y + rowGap*2, colW, "VOLUMEN",         DoubleToString(p_Vol, 2), "LOT");
+   CfgField("E_TECHO",   x,             y,            colW, "TECHO",              DoubleToString(p_Techo,   _Digits));
+   CfgField("E_PISO",    x + colW + 16, y,            colW, "PISO",               DoubleToString(p_Piso,    _Digits));
+   CfgField("E_TRIGGER", x,             y + rowGap,   w,    "TRIGGER DE ENTRADA", DoubleToString(p_Trigger, _Digits));
+   CfgField("E_G",       x,             y + rowGap*2, colW, "G % GEOMETRIA",      DoubleToString(p_G, 4), "%");
+   CfgField("E_VOL",     x + colW + 16, y + rowGap*2, colW, "VOLUMEN",            DoubleToString(p_Vol, 2), "LOT");
 
-   int cy = y + rowGap * 2 + 100;
-   PR("CFG_RANGE_CARD", x, cy, w, 200, CLR_BG_DEEP, CLR_BORDER, 1);
-   PL("CFG_RC_HD",  x + 24, cy + 22, "RANGO ACTIVO",                                                    CLR_TEXT_FAINT, 9);
-   PL("CFG_RC_NUM", x + 24, cy + 44, IntegerToString(ArraySize(GridLevels)) + " niveles",                CLR_TEXT, 18);
-   PL("CFG_RC_SUB", x + 24, cy + 86, DoubleToString(MathAbs(p_Techo - p_Piso) * 10000, 0) + " pips " +
-                                      DoubleToString(p_Piso, _Digits) + " -> " + DoubleToString(p_Techo, _Digits), CLR_TEXT_DIM, 9);
+   int cardH = CFG_CARD_H_RANGE;
+   int cyTop = y + rowGap * 2 + (CfgCompact ? 70 : 100);
+   int yFinDispo = yStart + hAvail;
+   if(cyTop + cardH > yFinDispo) cardH = MathMax(110, yFinDispo - cyTop);
 
-   int axisX = x + 24, axisY = cy + 158, axisW = w - 48;
-   PHR("CFG_RC_AXIS",    axisX, axisY, axisW, CLR_BORDER);
-   PVR("CFG_RC_PISO",    axisX,           cy + 144, 30, CLR_AMBER);
-   PL("CFG_RC_PISO_L",   axisX + 6,       cy + 126, "PISO",  CLR_AMBER,  9);
-   PVR("CFG_RC_TECHO",   axisX + axisW-1, cy + 144, 30, CLR_AMBER);
-   PL("CFG_RC_TECHO_L",  axisX + axisW - 44, cy + 126, "TECHO", CLR_AMBER, 9);
+   PR("CFG_RANGE_CARD", x, cyTop, w, cardH, CLR_BG_DEEP, CLR_BORDER, 1);
 
-   double rangePct = (p_Trigger - p_Piso) / MathMax(p_Techo - p_Piso, 0.00001);
-   int    trgX     = axisX + (int)(axisW * rangePct);
-   PVR("CFG_RC_TRG",   trgX,    cy + 138, 40, CLR_ACCENT);
-   PL("CFG_RC_TRG_L",  trgX + 5, cy + 126, "TRG", CLR_ACCENT, 9);
+   int padIn   = CfgCompact ? 16 : 24;
+   int hdGap   = CfgCompact ? 16 : 22;
+   int numGap  = CfgCompact ? 32 : 44;
+   int subGap  = CfgCompact ? 64 : 86;
+   int axisGap = CfgCompact ? 110 : 158;
 
-   int totalLvl = ArraySize(GridLevels);
-   for(int i = 0; i < totalLvl && i < 10; i++)
+   PL("CFG_RC_HD",  x + padIn, cyTop + hdGap,  "RANGO ACTIVO", CLR_TEXT_FAINT, 9);
+   PL("CFG_RC_NUM", x + padIn, cyTop + numGap, IntegerToString(ArraySize(GridLevels)) + " niveles", CLR_TEXT, CfgCompact ? 14 : 18);
+   PL("CFG_RC_SUB", x + padIn, cyTop + subGap, DoubleToString(MathAbs(p_Techo - p_Piso) * 10000, 0) + " pips " +
+                                               DoubleToString(p_Piso, _Digits) + " -> " + DoubleToString(p_Techo, _Digits), CLR_TEXT_DIM, 9);
+
+   if(cardH >= axisGap + 14)
    {
-      double lvlPct = (GridLevels[i] - p_Piso) / MathMax(p_Techo - p_Piso, 0.00001);
-      int    lvlX   = axisX + (int)(axisW * lvlPct);
-      PR("CFG_RC_L" + IntegerToString(i), lvlX - 2, axisY - 2, 5, 5, CLR_GREEN, CLR_GREEN, 0);
+      int axisX = x + padIn, axisY = cyTop + axisGap, axisW = w - padIn * 2;
+      PHR("CFG_RC_AXIS",    axisX, axisY, axisW, CLR_BORDER);
+      PVR("CFG_RC_PISO",    axisX,             axisY - 14, 28, CLR_AMBER);
+      PL ("CFG_RC_PISO_L",  axisX + 6,         axisY - 32, "PISO",  CLR_AMBER, 9);
+      PVR("CFG_RC_TECHO",   axisX + axisW - 1, axisY - 14, 28, CLR_AMBER);
+      PL ("CFG_RC_TECHO_L", axisX + axisW - 44, axisY - 32, "TECHO", CLR_AMBER, 9);
+
+      double rangePct = (p_Trigger - p_Piso) / MathMax(p_Techo - p_Piso, 0.00001);
+      int    trgX     = axisX + (int)(axisW * rangePct);
+      PVR("CFG_RC_TRG",   trgX,    axisY - 20, 36, CLR_ACCENT);
+      PL ("CFG_RC_TRG_L", trgX + 5, axisY - 32, "TRG", CLR_ACCENT, 9);
+
+      int totalLvl = ArraySize(GridLevels);
+      for(int i = 0; i < totalLvl && i < 10; i++)
+      {
+         double lvlPct = (GridLevels[i] - p_Piso) / MathMax(p_Techo - p_Piso, 0.00001);
+         int    lvlX   = axisX + (int)(axisW * lvlPct);
+         PR("CFG_RC_L" + IntegerToString(i), lvlX - 2, axisY - 2, 5, 5, CLR_GREEN, CLR_GREEN, 0);
+      }
    }
 }
 
 //+------------------------------------------------------------------+
-//| BODY RIESGO                                                      |
+//| BODY RIESGO (responsive)                                         |
 //+------------------------------------------------------------------+
-void DibujarBodyRiesgo(int x, int y, int w)
+void DibujarBodyRiesgo(int x, int y, int w, int hAvail)
 {
    int colW   = (w - 16) / 2;
-   int rowGap = 110;
+   int rowGap = CFG_ROW_GAP;
+   int togH   = CfgCompact ? 26 : 30;
+   int togGap = CfgCompact ? 22 : 28;
 
-   CfgField("E_CAP",  x,            y,           colW, "CAPITAL",     DoubleToString(p_Capital, 2), "USD");
-   CfgField("E_RISK", x + colW + 16, y,           colW, "RIESGO",      DoubleToString(p_Risk, 2),   "%");
-   CfgField("E_MAXO", x,            y + rowGap,  colW, "MAX ORDENES", IntegerToString(p_MaxOrd));
+   CfgField("E_CAP",  x,             y,           colW, "CAPITAL",     DoubleToString(p_Capital, 2), "USD");
+   CfgField("E_RISK", x + colW + 16, y,           colW, "RIESGO",      DoubleToString(p_Risk, 2),    "%");
+   CfgField("E_MAXO", x,             y + rowGap,  colW, "MAX ORDENES", IntegerToString(p_MaxOrd));
 
    PL("CFG_ML_L", x + colW + 16, y + rowGap, "MODO LIBRE", CLR_TEXT_DIM, 9);
    bool freeOff = !p_Libre;
-   PB("CFG_ML_OFF", x + colW + 16,          y + rowGap + 22, colW / 2, 30, "OFF",
+   PB("CFG_ML_OFF", x + colW + 16,           y + rowGap + togGap, colW / 2, togH, "OFF",
       freeOff  ? CLR_PANEL_HOV : CLR_BG_DEEP,
       freeOff  ? CLR_TEXT       : CLR_TEXT_FAINT, 10);
-   PB("CFG_ML_ON",  x + colW + 16 + colW/2, y + rowGap + 22, colW / 2, 30, "ON",
+   PB("CFG_ML_ON",  x + colW + 16 + colW/2,  y + rowGap + togGap, colW / 2, togH, "ON",
       !freeOff ? CLR_PANEL_HOV : CLR_BG_DEEP,
       !freeOff ? CLR_TEXT       : CLR_TEXT_FAINT, 10);
-   PE("E_LIBRE", x + colW + 16, y + rowGap + 22, 1, 1, p_Libre ? "true" : "false");
+   PE("E_LIBRE", x + colW + 16, y + rowGap + togGap, 1, 1, p_Libre ? "true" : "false");
    ObjectSetInteger(0, PFX + "E_E_LIBRE", OBJPROP_HIDDEN, true);
 
-   int   cy       = y + rowGap * 2 + 24;
-   bool  excedido = (RiesgoRealPct > p_Risk);
-   color cardBorder = excedido ? CLR_RED : CLR_GREEN;
-   PR("CFG_RSK_CARD", x, cy, w, 280, CLR_BG_DEEP, cardBorder, 1);
+   int cardH = CFG_CARD_H_RISK;
+   int cyTop = y + rowGap * 2 + (CfgCompact ? 16 : 24);
+   int yFinDispo = y + hAvail;
+   if(cyTop + cardH > yFinDispo) cardH = MathMax(140, yFinDispo - cyTop);
 
-   PR("CFG_RSK_DOT", x + 24, cy + 28, 10, 10, excedido ? CLR_RED : CLR_GREEN, excedido ? CLR_RED : CLR_GREEN, 0);
-   PL("CFG_RSK_HD",  x + 44, cy + 24, excedido ? "RIESGO EXCEDIDO" : "RIESGO OK", excedido ? CLR_RED : CLR_GREEN, 11);
+   bool  excedido   = (RiesgoRealPct > p_Risk);
+   color cardBorder = excedido ? CLR_RED : CLR_GREEN;
+   PR("CFG_RSK_CARD", x, cyTop, w, cardH, CLR_BG_DEEP, cardBorder, 1);
+
+   int padIn = CfgCompact ? 16 : 24;
+   PR("CFG_RSK_DOT", x + padIn,      cyTop + (CfgCompact ? 22 : 28), 10, 10, excedido ? CLR_RED : CLR_GREEN, excedido ? CLR_RED : CLR_GREEN, 0);
+   PL("CFG_RSK_HD",  x + padIn + 20, cyTop + (CfgCompact ? 18 : 24), excedido ? "RIESGO EXCEDIDO" : "RIESGO OK", excedido ? CLR_RED : CLR_GREEN, 11);
 
    if(excedido)
    {
       double over = (RiesgoRealPct / MathMax(p_Risk, 0.01) - 1.0) * 100.0;
-      PR("CFG_RSK_BG", x + w - 100, cy + 24, 80, 24, CLR_RED_DIM, CLR_RED_DIM, 0);
-      PL("CFG_RSK_BT", x + w - 92,  cy + 28, "+" + DoubleToString(over, 0) + "%", CLR_RED, 10);
+      PR("CFG_RSK_BG", x + w - 100, cyTop + (CfgCompact ? 18 : 24), 80, 24, CLR_RED_DIM, CLR_RED_DIM, 0);
+      PL("CFG_RSK_BT", x + w - 92,  cyTop + (CfgCompact ? 22 : 28), "+" + DoubleToString(over, 0) + "%", CLR_RED, 10);
    }
 
-   int statW  = (w - 48 - 40) / 3;
-   int statsY = cy + 78;
-   PL("CFG_RSK_S1L", x + 24,                  statsY,      "REAL %",    CLR_TEXT_FAINT, 9);
-   PL("CFG_RSK_S1V", x + 24,                  statsY + 22, DoubleToString(RiesgoRealPct, 2), excedido ? CLR_RED : CLR_GREEN, 18);
-   PL("CFG_RSK_S2L", x + 24 + statW + 20,     statsY,      "PERDIDA",   CLR_TEXT_FAINT, 9);
-   PL("CFG_RSK_S2V", x + 24 + statW + 20,     statsY + 22, "$" + DoubleToString(RiesgoRealUSD, 2), excedido ? CLR_RED : CLR_GREEN, 18);
-   PL("CFG_RSK_S3L", x + 24 + (statW+20)*2,   statsY,      "SEGURO",    CLR_TEXT_FAINT, 9);
-   PL("CFG_RSK_S3V", x + 24 + (statW+20)*2,   statsY + 22, IntegerToString(MaxOrdersSafe) + " rej", CLR_AMBER, 18);
+   int statW  = (w - padIn*2 - 40) / 3;
+   int statsY = cyTop + (CfgCompact ? 60 : 78);
+   int valSz  = CfgCompact ? 14 : 18;
+   PL("CFG_RSK_S1L", x + padIn,                  statsY,      "REAL %",                                  CLR_TEXT_FAINT, 9);
+   PL("CFG_RSK_S1V", x + padIn,                  statsY + 22, DoubleToString(RiesgoRealPct, 2),          excedido ? CLR_RED : CLR_GREEN, valSz);
+   PL("CFG_RSK_S2L", x + padIn + statW + 20,     statsY,      "PERDIDA",                                 CLR_TEXT_FAINT, 9);
+   PL("CFG_RSK_S2V", x + padIn + statW + 20,     statsY + 22, "$" + DoubleToString(RiesgoRealUSD, 2),    excedido ? CLR_RED : CLR_GREEN, valSz);
+   PL("CFG_RSK_S3L", x + padIn + (statW+20)*2,   statsY,      "SEGURO",                                  CLR_TEXT_FAINT, 9);
+   PL("CFG_RSK_S3V", x + padIn + (statW+20)*2,   statsY + 22, IntegerToString(MaxOrdersSafe) + " rej",   CLR_AMBER, valSz);
 
-   int barY = cy + 170;
-   PL("CFG_RSK_BL1", x + 24,         barY, "0%",                                    CLR_TEXT_FAINT, 9);
-   PL("CFG_RSK_BL2", x + (w/2) - 50, barY, "OBJETIVO " + DoubleToString(p_Risk,1)+"%", CLR_AMBER, 9);
-   PL("CFG_RSK_BL3", x + w - 50,     barY, "2x",                                    CLR_TEXT_FAINT, 9);
-   PR("CFG_RSK_BAR_BG", x + 24, barY + 26, w - 48, 10, CLR_BORDER, CLR_BORDER, 0);
-   double fillPct = MathMin(RiesgoRealPct / (p_Risk * 2.0), 1.0);
-   int    fillW   = (int)((w - 48) * fillPct);
-   PR("CFG_RSK_BAR_FL", x + 24, barY + 26, fillW, 10, excedido ? CLR_RED : CLR_GREEN, excedido ? CLR_RED : CLR_GREEN, 0);
-   PVR("CFG_RSK_BAR_MK", x + 24 + (w - 48) / 2, barY + 22, 18, CLR_AMBER);
+   int barY = cyTop + (CfgCompact ? 130 : 170);
+   if(barY + 36 <= cyTop + cardH - 10)
+   {
+      PL("CFG_RSK_BL1", x + padIn,          barY, "0%", CLR_TEXT_FAINT, 9);
+      PL("CFG_RSK_BL2", x + (w/2) - 50,     barY, "OBJETIVO " + DoubleToString(p_Risk,1)+"%", CLR_AMBER, 9);
+      PL("CFG_RSK_BL3", x + w - padIn - 26, barY, "2x", CLR_TEXT_FAINT, 9);
+      PR("CFG_RSK_BAR_BG", x + padIn, barY + 26, w - padIn*2, 10, CLR_BORDER, CLR_BORDER, 0);
+      double fillPct = MathMin(RiesgoRealPct / (p_Risk * 2.0), 1.0);
+      int    fillW   = (int)((w - padIn*2) * fillPct);
+      PR("CFG_RSK_BAR_FL", x + padIn, barY + 26, fillW, 10, excedido ? CLR_RED : CLR_GREEN, excedido ? CLR_RED : CLR_GREEN, 0);
+      PVR("CFG_RSK_BAR_MK", x + padIn + (w - padIn*2) / 2, barY + 22, 18, CLR_AMBER);
+   }
 }
 
 //+------------------------------------------------------------------+
-//| BODY SALIDAS                                                     |
+//| BODY SALIDAS (responsive)                                        |
 //+------------------------------------------------------------------+
-void DibujarBodySalidas(int x, int y, int w)
+void DibujarBodySalidas(int x, int y, int w, int hAvail)
 {
    int colW = (w - 16) / 2;
-   CfgField("E_TP", x,            y, colW, "TAKE PROFIT", DoubleToString(p_TP, _Digits));
+   CfgField("E_TP", x,             y, colW, "TAKE PROFIT", DoubleToString(p_TP, _Digits));
    CfgField("E_SL", x + colW + 16, y, colW, "STOP LOSS",   DoubleToString(p_SL, _Digits));
 
-   int cy = y + 120, cardH = 480;
-   PR("CFG_EXT_CARD", x, cy, w, cardH, CLR_BG_DEEP, CLR_BORDER, 1);
-   PL("CFG_EXT_HD", x + 24, cy + 22, "DISTANCIAS DESDE TRIGGER", CLR_TEXT_FAINT, 10);
+   int rowFieldH = CfgCompact ? 86 : 120;
+   int cyTop = y + rowFieldH;
+   int cardH = CFG_CARD_H_EXIT;
+   int yFinDispo = y + hAvail;
+   if(cyTop + cardH > yFinDispo) cardH = MathMax(220, yFinDispo - cyTop);
+
+   PR("CFG_EXT_CARD", x, cyTop, w, cardH, CLR_BG_DEEP, CLR_BORDER, 1);
+
+   int padIn = CfgCompact ? 16 : 24;
+   PL("CFG_EXT_HD", x + padIn, cyTop + (CfgCompact ? 16 : 22), "DISTANCIAS DESDE TRIGGER", CLR_TEXT_FAINT, 10);
 
    double dist_tp = MathAbs(p_TP      - p_Trigger);
    double dist_sl = MathAbs(p_Trigger - p_SL);
    double maxD    = MathMax(dist_tp, dist_sl);
-   int    barX    = x + 72, barW = w - 96;
+   int    barX    = x + (CfgCompact ? 56 : 72);
+   int    barW    = w - (CfgCompact ? 76 : 96);
+   int    rowH    = CfgCompact ? 44 : 60;
+   int    sepH    = CfgCompact ? 30 : 44;
 
-   int rowY    = cy + 68;
+   int rowY = cyTop + (CfgCompact ? 50 : 68);
+   int sepY = rowY + rowH + (CfgCompact ? 14 : 26);
+   int slY  = sepY + sepH;
+
+   // TP row
    int tpBarW  = (int)(barW * (dist_tp / MathMax(maxD, 0.0001)));
-   PL("CFG_EXT_TPL",  x + 24,      rowY + 22, "TP", CLR_GREEN, 11);
-   PR("CFG_EXT_TPBG", barX,        rowY, barW, 60, CLR_BG, CLR_BORDER, 1);
-   PR("CFG_EXT_TPLN", barX,        rowY, 5,    60, CLR_GREEN, CLR_GREEN, 0);
-   PR("CFG_EXT_TPFL", barX + 5,    rowY + 1, tpBarW - 5, 58, C'18,55,38', C'18,55,38', 0);
-   PL("CFG_EXT_TPV",  barX + 18,   rowY + 22, "+" + DoubleToString(dist_tp * 10000, 1) + " pips", CLR_GREEN, 13);
-   PL("CFG_EXT_TPP",  barX + barW - 78, rowY + 22, "+" + DoubleToString(dist_tp / p_Trigger * 100, 2) + "%", CLR_GREEN, 11);
+   PL("CFG_EXT_TPL",  x + padIn,        rowY + (rowH-22)/2, "TP", CLR_GREEN, 11);
+   PR("CFG_EXT_TPBG", barX,             rowY, barW, rowH, CLR_BG, CLR_BORDER, 1);
+   PR("CFG_EXT_TPLN", barX,             rowY, 5,    rowH, CLR_GREEN, CLR_GREEN, 0);
+   PR("CFG_EXT_TPFL", barX + 5,         rowY + 1, tpBarW - 5, rowH - 2, C'18,55,38', C'18,55,38', 0);
+   PL("CFG_EXT_TPV",  barX + 18,        rowY + (rowH-22)/2, "+" + DoubleToString(dist_tp * 10000, 1) + " pips", CLR_GREEN, 13);
+   PL("CFG_EXT_TPP",  barX + barW - 78, rowY + (rowH-22)/2, "+" + DoubleToString(dist_tp / p_Trigger * 100, 2) + "%", CLR_GREEN, 11);
 
-   int sepY = rowY + 86;
-   PL("CFG_EXT_TGL",  x + 24,          sepY + 8,  "TRG",                           CLR_ACCENT, 11);
-   PHR("CFG_EXT_TGLN", barX,            sepY + 15, barW,                             CLR_ACCENT);
-   PL("CFG_EXT_TGV",  barX + barW - 80, sepY + 5,  DoubleToString(p_Trigger, _Digits), CLR_ACCENT, 11);
+   // TRG separator
+   PL ("CFG_EXT_TGL",  x + padIn,        sepY + 6,         "TRG", CLR_ACCENT, 11);
+   PHR("CFG_EXT_TGLN", barX,             sepY + sepH/2,    barW,  CLR_ACCENT);
+   PL ("CFG_EXT_TGV",  barX + barW - 80, sepY + 4,         DoubleToString(p_Trigger, _Digits), CLR_ACCENT, 11);
 
-   int slY    = sepY + 44;
+   // SL row
    int slBarW = (int)(barW * (dist_sl / MathMax(maxD, 0.0001)));
-   PL("CFG_EXT_SLL",  x + 24,      slY + 22, "SL", CLR_RED, 11);
-   PR("CFG_EXT_SLBG", barX,        slY, barW, 60, CLR_BG, CLR_BORDER, 1);
-   PR("CFG_EXT_SLLN", barX,        slY, 5,    60, CLR_RED, CLR_RED, 0);
-   PR("CFG_EXT_SLFL", barX + 5,    slY + 1, slBarW - 5, 58, C'60,22,22', C'60,22,22', 0);
-   PL("CFG_EXT_SLV",  barX + 18,   slY + 22, "-" + DoubleToString(dist_sl * 10000, 1) + " pips", CLR_RED, 13);
-   PL("CFG_EXT_SLP",  barX + barW - 78, slY + 22, "-" + DoubleToString(dist_sl / p_Trigger * 100, 2) + "%", CLR_RED, 11);
+   PL("CFG_EXT_SLL",  x + padIn,        slY + (rowH-22)/2, "SL", CLR_RED, 11);
+   PR("CFG_EXT_SLBG", barX,             slY, barW, rowH, CLR_BG, CLR_BORDER, 1);
+   PR("CFG_EXT_SLLN", barX,             slY, 5,    rowH, CLR_RED, CLR_RED, 0);
+   PR("CFG_EXT_SLFL", barX + 5,         slY + 1, slBarW - 5, rowH - 2, C'60,22,22', C'60,22,22', 0);
+   PL("CFG_EXT_SLV",  barX + 18,        slY + (rowH-22)/2, "-" + DoubleToString(dist_sl * 10000, 1) + " pips", CLR_RED, 13);
+   PL("CFG_EXT_SLP",  barX + barW - 78, slY + (rowH-22)/2, "-" + DoubleToString(dist_sl / p_Trigger * 100, 2) + "%", CLR_RED, 11);
 
+   // Risk/Reward card (solo si cabe)
    double rr      = dist_tp / MathMax(dist_sl, 0.00001);
    bool   rrGood  = (rr >= 1.5);
    color  rrColor = rrGood ? CLR_GREEN : (rr >= 1.0 ? CLR_AMBER : CLR_RED);
 
-   int rrY = slY + 100, rrH = 130;
-   PR("CFG_EXT_RR_BG", x + 24,   rrY, w - 48, rrH, CLR_BG, rrColor, 1);
-   PL("CFG_EXT_RR_L",  x + 56,   rrY + 28, "RISK / REWARD",          CLR_TEXT_FAINT, 11);
-   PL("CFG_EXT_RR_V",  x + 56,   rrY + 62, "1 : " + DoubleToString(rr, 2), rrColor, 22);
+   int rrY = slY + rowH + (CfgCompact ? 16 : 30);
+   int rrH = CfgCompact ? 90 : 130;
+   if(rrY + rrH <= cyTop + cardH - 8)
+   {
+      PR("CFG_EXT_RR_BG", x + padIn,      rrY,                              w - padIn*2, rrH, CLR_BG, rrColor, 1);
+      PL("CFG_EXT_RR_L",  x + padIn + 24, rrY + (CfgCompact ? 18 : 28),     "RISK / REWARD",                   CLR_TEXT_FAINT, 11);
+      PL("CFG_EXT_RR_V",  x + padIn + 24, rrY + (CfgCompact ? 42 : 62),     "1 : " + DoubleToString(rr, 2),    rrColor, CfgCompact ? 18 : 22);
 
-   string rrLabel = rrGood ? "OPTIMO" : (rr >= 1.0 ? "ACEPTABLE" : "SUBOPTIMO");
-   int    badgeW  = 180, badgeH = 42;
-   int    badgeX  = x + w - 56 - badgeW;
-   int    badgeY  = rrY + (rrH - badgeH) / 2;
-   PB("CFG_EXT_RR_PT", badgeX, badgeY, badgeW, badgeH, rrLabel, rrColor, CLR_TEXT, 12);
+      string rrLabel = rrGood ? "OPTIMO" : (rr >= 1.0 ? "ACEPTABLE" : "SUBOPTIMO");
+      int    badgeW  = CfgCompact ? 140 : 180;
+      int    badgeH  = CfgCompact ? 36  : 42;
+      int    badgeX  = x + w - padIn - 24 - badgeW;
+      int    badgeY  = rrY + (rrH - badgeH) / 2;
+      PB("CFG_EXT_RR_PT", badgeX, badgeY, badgeW, badgeH, rrLabel, rrColor, CLR_TEXT, CfgCompact ? 11 : 12);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -920,6 +1047,15 @@ void OnChartEvent(const int id, const long& lparam, const double& dparam, const 
       if(!md) Dragging = false;
       return;
    }
+
+   // Re-dibujar config dialog si cambia el tamaño del chart
+   if(id == CHARTEVENT_CHART_CHANGE)
+   {
+      if(ConfigVisible) { BorrarConfigDialog(); DibujarConfigDialog(); }
+      if(AlertaVisible) { BorrarAlerta();        DibujarAlerta();      }
+      return;
+   }
+
    if(id != CHARTEVENT_OBJECT_CLICK) return;
 
    if(sparam == PFX + "B_CFGBTN")
@@ -1047,12 +1183,12 @@ void CalcularRejillas()
 
 bool ValidarInputs()
 {
-   if(MagicNumber == 0)                          { Print("ERROR: Magic=0");         return false; }
-   if(p_Piso >= p_Techo)                         { Print("ERROR: Piso>=Techo");     return false; }
-   if(p_G <= 0)                                  { Print("ERROR: G%<=0");           return false; }
-   if(p_Vol <= 0)                                { Print("ERROR: Volumen<=0");      return false; }
-   if(p_Trigger < p_Piso || p_Trigger > p_Techo){ Print("ERROR: Trigger fuera");   return false; }
-   if(p_Capital <= 0)                            { Print("ERROR: Capital<=0");      return false; }
+   if(MagicNumber == 0)                         { Print("ERROR: Magic=0");       return false; }
+   if(p_Piso >= p_Techo)                        { Print("ERROR: Piso>=Techo");   return false; }
+   if(p_G <= 0)                                 { Print("ERROR: G%<=0");         return false; }
+   if(p_Vol <= 0)                               { Print("ERROR: Volumen<=0");    return false; }
+   if(p_Trigger < p_Piso || p_Trigger > p_Techo){ Print("ERROR: Trigger fuera"); return false; }
+   if(p_Capital <= 0)                           { Print("ERROR: Capital<=0");    return false; }
    if(p_Direccion == GRID_LONG)
    {
       if(p_TP <= p_Trigger){ Print("ERROR LONG: TP debe ser > Trigger"); return false; }
@@ -1249,9 +1385,9 @@ void ProcesarDeals()
    for(int i = 0; i < total; i++)
    {
       ulong ticket = HistoryDealGetTicket(i);
-      if(ticket <= UltimoDealProcesado)                                 continue;
-      if(HistoryDealGetInteger(ticket, DEAL_MAGIC)  != MagicNumber)    continue;
-      if(HistoryDealGetString(ticket,  DEAL_SYMBOL) != _Symbol)        continue;
+      if(ticket <= UltimoDealProcesado)                              continue;
+      if(HistoryDealGetInteger(ticket, DEAL_MAGIC)  != MagicNumber)  continue;
+      if(HistoryDealGetString(ticket,  DEAL_SYMBOL) != _Symbol)      continue;
 
       ENUM_DEAL_ENTRY entry  = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(ticket, DEAL_ENTRY);
       ENUM_DEAL_TYPE  dtype  = (ENUM_DEAL_TYPE) HistoryDealGetInteger(ticket, DEAL_TYPE);
@@ -1304,7 +1440,7 @@ void InicializarCursorDeals()
 int OnInit()
 {
    Print("================================================");
-   Print("GridBot v3.40 | UI Modern Dark | ", _Symbol);
+   Print("GridBot v3.41 | UI Modern Dark + Responsive | ", _Symbol);
    Print("================================================");
    CargarParametros();
    if(!ValidarInputs()) return INIT_PARAMETERS_INCORRECT;
@@ -1350,6 +1486,6 @@ void OnDeinit(const int reason)
 {
    ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, false);
    BorrarTodo();
-   PrintFormat("GridBot v3.40 fin. Estado=%d | Acumulado=%.2f USD", estado, GananciaAcumulada);
+   PrintFormat("GridBot v3.41 fin. Estado=%d | Acumulado=%.2f USD", estado, GananciaAcumulada);
 }
 //+------------------------------------------------------------------+
