@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
 //| GridBot.mq5                                                      |
 //| Bot de Grid Geometrico Dinamico para Forex (MT5)                 |
-//| v3.4.2 — UI Responsive + Minimizar + LONG/SHORT                  |
+//| v3.4.3 — UI Responsive + Minimizar + LONG/SHORT                  |
 //+------------------------------------------------------------------+
 #property copyright "Oscar Alvarado"
-#property version   "3.42"
+#property version   "3.43"
 #property strict
 #include <Trade/Trade.mqh>
 CTrade trade;
@@ -57,6 +57,20 @@ enum AlertType { ALERT_INFO, ALERT_WARN, ALERT_ERROR, ALERT_SUCCESS };
 bool      AlertaVisible    = false;
 bool      PanelMinimized   = false;
 bool      ConfigMinimized  = false;
+
+// Drag de paneles
+bool DragPanel = false, DragConfig = false;
+int  DragOffX  = 0, DragOffY = 0;
+int  PanelPosX = 8, PanelPosY = 8;     // posicion runtime del panel principal
+int  ConfigPosX = -1, ConfigPosY = -1; // posicion runtime del config (-1 = centrar)
+
+// Cache para evitar parpadeo en CHART_CHANGE
+int  LastChartW = 0, LastChartH = 0;
+
+// Cache de valores de OBJ_EDIT — para detectar cambios y auto-aplicar
+string PrevTecho="", PrevPiso="", PrevTrigger="", PrevG="", PrevVol="";
+string PrevCap="", PrevRisk="", PrevMaxo="";
+string PrevTP="", PrevSL="";
 string    AlertaTitle      = "";
 string    AlertaMsg        = "";
 string    AlertaSubMsg     = "";
@@ -340,6 +354,8 @@ void PE(string id, int x, int y, int w, int h, string val)
    ObjectSetInteger(0, n, OBJPROP_FONTSIZE,     10);
    ObjectSetString(0,  n, OBJPROP_FONT,         "Consolas");
    ObjectSetInteger(0, n, OBJPROP_ALIGN,        ALIGN_LEFT);
+   // OBJ_EDIT debe ser READ_ONLY=false y BACK=false para recibir eventos de edicion
+   ObjectSetInteger(0, n, OBJPROP_READONLY,     false);
    ObjectSetInteger(0, n, OBJPROP_SELECTABLE,   false);
    ObjectSetInteger(0, n, OBJPROP_BACK,         false);
 }
@@ -534,43 +550,43 @@ void DibujarPanel()
    BorrarPanelTodo();
 
    double sc  = GetUIScale();
-   int    W   = Sc(180);   // mas compacto (era 220)
+   int    W   = Sc(180);
    int    PAD = Sc(10);
-   int    HDR = Sc(30);
-   int    x   = Sc(8);
-   int    y   = Sc(8);
+   int    HDR = Sc(28);
+   int    x   = PanelPosX;
+   int    y   = PanelPosY;
 
-   int rowH = Sc(16);
-   int gapS = Sc(6);
+   int rowH = Sc(15);
+   int gapS = Sc(5);
+   int sz7  = Sc(7);
    int sz8  = Sc(8);
    int sz9  = Sc(9);
    int sz10 = Sc(10);
-   int sz11 = Sc(11);
-   int COL  = Sc(82);
+   int COL  = Sc(78);
 
    string minIcon = PanelMinimized ? "+" : "_";
-   int    minSz   = Sc(20);
+   int    minSz   = Sc(18);
    int    minY    = y + (HDR - minSz) / 2;
-   int    logoSz  = Sc(20);
+   int    logoSz  = Sc(18);
    int    logoY   = y + (HDR - logoSz) / 2;
 
-   // PASO 1: Dibujar BG completo PRIMERO
-   int totalH = PanelMinimized ? HDR : Sc(280);
+   // BG primero
+   int totalH = PanelMinimized ? HDR : Sc(260);
    PR("BG", x, y, W, totalH, CLR_PANEL, CLR_BORDER_LT, 1);
 
-   // PASO 2: Header encima del BG
+   // Header
    PR("BG_HDR", x, y, W, HDR, CLR_BG_DEEP, CLR_BG_DEEP, 0);
    if(!PanelMinimized) PHR("HDR_LN", x, y + HDR - 1, W, CLR_BORDER);
 
-   // PASO 3: Elementos del header ENCIMA del BG_HDR
-   PB("LOGO", x + PAD, logoY, logoSz, logoSz, "G", CLR_ACCENT, CLR_TEXT, Sc(10));
+   // Elementos del header
+   PB("LOGO", x + PAD, logoY, logoSz, logoSz, "G", CLR_ACCENT, CLR_TEXT, Sc(9));
    ObjectSetInteger(0, PFX + "B_LOGO", OBJPROP_BORDER_COLOR, CLR_ACCENT);
-   PL("HTIT", x + PAD + logoSz + Sc(6), y + (HDR - Sc(13))/2, "GRIDBOT", CLR_TEXT, sz9);
+   PL("HTIT", x + PAD + logoSz + Sc(6), y + (HDR - Sc(12))/2, "GRIDBOT", CLR_TEXT, sz9);
 
-   // PASO 4: Boton minimizar — explicitamente al final para que quede encima
-   PB("MINBTN", x + W - PAD - minSz, minY, minSz, minSz, minIcon, CLR_PANEL_HOV, CLR_TEXT, Sc(11));
+   // Minimizar
+   PB("MINBTN", x + W - PAD - minSz, minY, minSz, minSz, minIcon, CLR_PANEL_HOV, CLR_TEXT, Sc(10));
 
-   // PASO 5: Botones de esquina derecha del chart
+   // Botones esquina derecha del chart
    DibujarBotonesEsquina();
 
    if(PanelMinimized)
@@ -579,7 +595,6 @@ void DibujarPanel()
       return;
    }
 
-   // PASO 6: Body del panel
    string eStr; color eClr;
    switch(estado)
    {
@@ -595,39 +610,39 @@ void DibujarPanel()
    color  ganC = GananciaAcumulada >= 0 ? CLR_GREEN : CLR_RED;
    color  rskC = (RiesgoRealPct > p_Risk) ? CLR_RED : CLR_GREEN;
 
-   int cy = y + HDR + gapS;
+   int cy = y + HDR + gapS + Sc(2);
 
-   PL("ELAB", x + PAD, cy + 2, "ESTADO", CLR_TEXT_FAINT, sz8);
-   PL("EVAL", x + COL, cy,     eStr,     eClr,           sz11);
-   cy += rowH + Sc(4);
+   PL("ELAB", x + PAD, cy + 1, "ESTADO", CLR_TEXT_FAINT, sz7);
+   PL("EVAL", x + COL, cy,     eStr,     eClr,           sz10);
+   cy += rowH + Sc(2);
    PHR("S1", x + PAD, cy, W - PAD * 2, CLR_BORDER); cy += gapS;
 
-   PL("BLAB", x + PAD, cy + 1, "PRECIO", CLR_TEXT_FAINT, sz8);
-   PL("BVAL", x + COL, cy,     DoubleToString(bid, _Digits), CLR_TEXT, sz10);
-   cy += rowH;
-   PL("TLAB", x + PAD, cy + 1, "TRIGGER", CLR_TEXT_FAINT, sz8);
-   PL("TVAL", x + COL, cy,     DoubleToString(p_Trigger, _Digits), CLR_ACCENT, sz10);
-   cy += rowH + Sc(4);
+   PL("BLAB", x + PAD, cy + 1, "PRECIO", CLR_TEXT_FAINT, sz7);
+   PL("BVAL", x + COL, cy,     DoubleToString(bid, _Digits), CLR_TEXT, sz9);
+   cy += rowH - Sc(1);
+   PL("TLAB", x + PAD, cy + 1, "TRIGGER", CLR_TEXT_FAINT, sz7);
+   PL("TVAL", x + COL, cy,     DoubleToString(p_Trigger, _Digits), CLR_ACCENT, sz9);
+   cy += rowH + Sc(2);
    PHR("S2", x + PAD, cy, W - PAD * 2, CLR_BORDER); cy += gapS;
 
-   PL("RHTL", x + PAD, cy, "RIESGO", CLR_TEXT_FAINT, sz8); cy += rowH - Sc(2);
-   PL("RCLA", x + PAD, cy + 1, "Config", CLR_TEXT_DIM, sz8);
-   PL("RCVA", x + COL, cy, DoubleToString(p_Risk, 1) + "% / $" + DoubleToString(p_Capital * p_Risk / 100, 0), CLR_GREEN, sz9);
-   cy += rowH - Sc(2);
-   PL("RRLA", x + PAD, cy + 1, "Real", CLR_TEXT_DIM, sz8);
-   PL("RRVA", x + COL, cy, DoubleToString(RiesgoRealPct, 1) + "% / $" + DoubleToString(RiesgoRealUSD, 1), rskC, sz9);
-   cy += rowH - Sc(2);
-   PL("GRLA", x + PAD, cy + 1, "Rejillas", CLR_TEXT_DIM, sz8);
-   PL("GRVA", x + COL, cy, IntegerToString(RejillasActivas) + "/" + IntegerToString(p_MaxOrd), CLR_TEXT, sz9);
-   cy += rowH - Sc(2);
-   PL("GPLA", x + PAD, cy + 1, "Gan/rej", CLR_TEXT_DIM, sz8);
-   PL("GPVA", x + COL, cy, "$" + DoubleToString(GananciaPorRejilla, 2), CLR_GREEN, sz9);
-   cy += rowH;
+   PL("RHTL", x + PAD, cy, "RIESGO", CLR_TEXT_FAINT, sz7); cy += rowH - Sc(3);
+   PL("RCLA", x + PAD, cy + 1, "Config", CLR_TEXT_DIM, sz7);
+   PL("RCVA", x + COL, cy, DoubleToString(p_Risk, 1) + "% / $" + DoubleToString(p_Capital * p_Risk / 100, 0), CLR_GREEN, sz8);
+   cy += rowH - Sc(3);
+   PL("RRLA", x + PAD, cy + 1, "Real", CLR_TEXT_DIM, sz7);
+   PL("RRVA", x + COL, cy, DoubleToString(RiesgoRealPct, 1) + "% / $" + DoubleToString(RiesgoRealUSD, 1), rskC, sz8);
+   cy += rowH - Sc(3);
+   PL("GRLA", x + PAD, cy + 1, "Rejillas", CLR_TEXT_DIM, sz7);
+   PL("GRVA", x + COL, cy, IntegerToString(RejillasActivas) + "/" + IntegerToString(p_MaxOrd) + " (" + IntegerToString(MaxOrdersSafe) + " ok)", CLR_TEXT, sz8);
+   cy += rowH - Sc(3);
+   PL("GPLA", x + PAD, cy + 1, "Gan/rej", CLR_TEXT_DIM, sz7);
+   PL("GPVA", x + COL, cy, "$" + DoubleToString(GananciaPorRejilla, 2), CLR_GREEN, sz8);
+   cy += rowH - Sc(1);
    PHR("S3", x + PAD, cy, W - PAD * 2, CLR_BORDER); cy += gapS;
 
-   PL("GNLA", x + PAD, cy + 2, "GANANCIA", CLR_TEXT_FAINT, sz8);
-   PL("GNVA", x + COL, cy,     ganS,       ganC,           sz11);
-   cy += rowH + Sc(4);
+   PL("GNLA", x + PAD, cy + 1, "GANANCIA", CLR_TEXT_FAINT, sz7);
+   PL("GNVA", x + COL, cy,     ganS,       ganC,           sz10);
+   cy += rowH + Sc(2);
    PHR("S4", x + PAD, cy, W - PAD * 2, CLR_BORDER); cy += gapS;
 
    int btnH = Sc(24);
@@ -682,44 +697,29 @@ void CalcularLayoutConfig()
    int maxW = cw - 40;
    int maxH = ch - 40;
 
-   // Tamaño base mucho mas pequeño - se ve estetico, no invasivo
-   CfgW = MathMin((int)(520*sc), maxW); if(CfgW < 440) CfgW = 440;
-   CfgH = MathMin((int)(680*sc), maxH); if(CfgH < 480) CfgH = 480;
+   // Tamaño profesional compacto
+   CfgW = MathMin((int)(460*sc), maxW); if(CfgW < 400) CfgW = 400;
+   CfgH = MathMin((int)(560*sc), maxH); if(CfgH < 420) CfgH = 420;
 
-   CfgCompact = (CfgH < (int)(640*sc));
+   CfgCompact = true;  // siempre compacto para look profesional consistente
 
-   if(CfgCompact)
-   {
-      CFG_HDR_H        = Sc(64);
-      CFG_TABS_H       = Sc(38);
-      CFG_FOOT_H       = Sc(56);
-      CFG_BODY_PAD_TOP = Sc(16);
-      CFG_ROW_GAP      = Sc(62);
-      CFG_CARD_H_RANGE = Sc(110);
-      CFG_CARD_H_RISK  = Sc(170);
-      CFG_CARD_H_EXIT  = Sc(240);
-      CFG_PAD          = Sc(18);
-   }
-   else
-   {
-      CFG_HDR_H        = Sc(74);
-      CFG_TABS_H       = Sc(42);
-      CFG_FOOT_H       = Sc(64);
-      CFG_BODY_PAD_TOP = Sc(20);
-      CFG_ROW_GAP      = Sc(72);
-      CFG_CARD_H_RANGE = Sc(130);
-      CFG_CARD_H_RISK  = Sc(190);
-      CFG_CARD_H_EXIT  = Sc(290);
-      CFG_PAD          = Sc(22);
-   }
+   CFG_HDR_H        = Sc(56);
+   CFG_TABS_H       = Sc(34);
+   CFG_FOOT_H       = Sc(52);
+   CFG_BODY_PAD_TOP = Sc(14);
+   CFG_ROW_GAP      = Sc(56);
+   CFG_CARD_H_RANGE = Sc(96);
+   CFG_CARD_H_RISK  = Sc(152);
+   CFG_CARD_H_EXIT  = Sc(220);
+   CFG_PAD          = Sc(16);
 }
 
 void CfgField(string id, int x, int y, int w, string label, string val, string suffix = "")
 {
-   int inputH = CfgCompact ? Sc(22) : Sc(26);
-   int gap    = CfgCompact ? Sc(16) : Sc(20);
-   int sufW   = CfgCompact ? Sc(38) : Sc(42);
-   int lblSz  = CfgCompact ? Sc(8)  : Sc(8);
+   int inputH = Sc(22);
+   int gap    = Sc(14);
+   int sufW   = Sc(34);
+   int lblSz  = Sc(8);
    PL("CFG_" + id + "_L", x, y, label, CLR_TEXT_DIM, lblSz);
    if(suffix != "")
    {
@@ -762,8 +762,22 @@ void DibujarConfigDialog()
 
    int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
    int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-   CfgX = (cw - CfgW) / 2; if(CfgX < 10) CfgX = 10;
-   CfgY = (ch - CfgH) / 2; if(CfgY < 10) CfgY = 10;
+   if(ConfigPosX < 0 || ConfigPosY < 0)
+   {
+      // Primera vez — centrar
+      CfgX = (cw - CfgW) / 2; if(CfgX < 10) CfgX = 10;
+      CfgY = (ch - CfgH) / 2; if(CfgY < 10) CfgY = 10;
+      ConfigPosX = CfgX; ConfigPosY = CfgY;
+   }
+   else
+   {
+      CfgX = ConfigPosX; CfgY = ConfigPosY;
+      // Asegurar que no se salga del chart
+      if(CfgX + CfgW > cw) CfgX = cw - CfgW - 10;
+      if(CfgY + CfgH > ch) CfgY = ch - CfgH - 10;
+      if(CfgX < 10) CfgX = 10;
+      if(CfgY < 10) CfgY = 10;
+   }
 
    int x = CfgX, y = CfgY, W = CfgW, H = CfgH;
    int PAD      = CFG_PAD;
@@ -775,18 +789,18 @@ void DibujarConfigDialog()
    PR("CFG_HDR",    x, y, W, HDR_H,    CLR_BG_DEEP, CLR_BG_DEEP,   0);
    PHR("CFG_HDR_LN", x, y + HDR_H - 1, W, CLR_BORDER);
 
-   int logoSize = CfgCompact ? Sc(28) : Sc(34);
+   int logoSize = Sc(26);
    int logoY    = y + (HDR_H - logoSize) / 2;
-   PB("CFG_LOGO", x + PAD, logoY, logoSize, logoSize, "G", CLR_ACCENT, CLR_TEXT, CfgCompact ? Sc(13) : Sc(16));
+   PB("CFG_LOGO", x + PAD, logoY, logoSize, logoSize, "G", CLR_ACCENT, CLR_TEXT, Sc(12));
    ObjectSetInteger(0, PFX + "B_CFG_LOGO", OBJPROP_BORDER_COLOR, CLR_ACCENT);
 
    int titX  = x + PAD + logoSize + Sc(10);
-   int titSz = CfgCompact ? Sc(10) : Sc(12);
-   int subSz = CfgCompact ? Sc(8)  : Sc(9);
-   int titY  = y + HDR_H/2 - (CfgCompact ? Sc(13) : Sc(16));
-   int subY  = y + HDR_H/2 + (CfgCompact ? Sc(1)  : Sc(4));
+   int titSz = Sc(11);
+   int subSz = Sc(8);
+   int titY  = y + HDR_H/2 - Sc(12);
+   int subY  = y + HDR_H/2 + Sc(2);
    PL("CFG_TIT", titX, titY, "GRIDBOT CONFIG",  CLR_TEXT,     titSz, "Arial");
-   PL("CFG_SUB", titX, subY, "v3.4.2 " + _Symbol, CLR_TEXT_DIM, subSz);
+   PL("CFG_SUB", titX, subY, "v3.4.3 " + _Symbol, CLR_TEXT_DIM, subSz);
 
    string stBadge; color stBadgeC;
    switch(estado)
@@ -797,18 +811,18 @@ void DibujarConfigDialog()
       case STOPPED: stBadge = "STOPPED"; stBadgeC = CLR_RED;    break;
       default:      stBadge = "READY";   stBadgeC = CLR_AMBER;  break;
    }
-   int badgeW = CfgCompact ? Sc(86)  : Sc(100);
-   int badgeH = CfgCompact ? Sc(28)  : Sc(32);
+   int badgeW = Sc(76);
+   int badgeH = Sc(24);
    int badgeY = y + (HDR_H - badgeH) / 2;
-   int closeW = CfgCompact ? Sc(28)  : Sc(32);
+   int closeW = Sc(24);
    int closeH = badgeH;
    int minW   = closeW;
-   int gap    = Sc(6);
+   int gap    = Sc(5);
 
-   PB("CFG_ST_T", x + W - PAD - closeW - gap - minW - gap - badgeW, badgeY, badgeW, badgeH, stBadge, CLR_BG_DEEP, stBadgeC, CfgCompact ? Sc(9) : Sc(10));
+   PB("CFG_ST_T", x + W - PAD - closeW - gap - minW - gap - badgeW, badgeY, badgeW, badgeH, stBadge, CLR_BG_DEEP, stBadgeC, Sc(8));
    ObjectSetInteger(0, PFX + "B_CFG_ST_T", OBJPROP_BORDER_COLOR, stBadgeC);
-   PB("CFG_MIN",  x + W - PAD - closeW - gap - minW, badgeY, minW, closeH, "_", CLR_PANEL_HOV, CLR_TEXT, CfgCompact ? Sc(10) : Sc(11));
-   PB("CFG_X",    x + W - PAD - closeW,              badgeY, closeW, closeH, "X", CLR_RED_DIM, CLR_TEXT, CfgCompact ? Sc(10) : Sc(11));
+   PB("CFG_MIN",  x + W - PAD - closeW - gap - minW, badgeY, minW, closeH, "_", CLR_PANEL_HOV, CLR_TEXT, Sc(10));
+   PB("CFG_X",    x + W - PAD - closeW,              badgeY, closeW, closeH, "X", CLR_RED_DIM, CLR_TEXT, Sc(10));
 
    int tabsY = y + HDR_H;
    PR("CFG_TBG",    x, tabsY, W, TABS_H,  CLR_BG, CLR_BG, 0);
@@ -821,8 +835,8 @@ void DibujarConfigDialog()
       bool  act = (i == ConfigTab);
       color tbg = act ? CLR_TAB_ACTIVE : CLR_BG;
       color tcl = act ? CLR_TEXT       : CLR_TEXT_DIM;
-      PB("CFG_T" + IntegerToString(i), x + i * tw, tabsY, tw, TABS_H - 2, tabLabels[i], tbg, tcl, CfgCompact ? Sc(9) : Sc(10));
-      if(act) PR("CFG_T" + IntegerToString(i) + "_IND", x + i * tw + tw / 4, tabsY + TABS_H - Sc(4), tw / 2, Sc(3), CLR_ACCENT, CLR_ACCENT, 0);
+      PB("CFG_T" + IntegerToString(i), x + i * tw, tabsY, tw, TABS_H - 2, tabLabels[i], tbg, tcl, Sc(9));
+      if(act) PR("CFG_T" + IntegerToString(i) + "_IND", x + i * tw + tw / 3, tabsY + TABS_H - Sc(3), tw / 3, Sc(2), CLR_ACCENT, CLR_ACCENT, 0);
       else    DelObj("R_CFG_T" + IntegerToString(i) + "_IND");
    }
 
@@ -838,15 +852,16 @@ void DibujarConfigDialog()
    PHR("CFG_FT_LN", x, fy, W, CLR_BORDER);
    PR("CFG_FT",     x, fy + 1, W, FOOTER_H - 1, CLR_BG_DEEP, CLR_BG_DEEP, 0);
 
-   int btnGap    = Sc(12);
+   int btnGap    = Sc(10);
    int btnTotalW = W - PAD * 2;
    int cancelW   = (btnTotalW - btnGap) / 2;
    int applyW    = btnTotalW - cancelW - btnGap;
-   int btnH      = CfgCompact ? Sc(28) : Sc(32);
+   int btnH      = Sc(26);
    int btnY      = fy + (FOOTER_H - btnH) / 2;
-   PB("CFG_CANCEL", x + PAD,                    btnY, cancelW, btnH, "CANCELAR", CLR_PANEL_HOV, CLR_TEXT, CfgCompact ? Sc(9) : Sc(10));
-   PB("CFG_APPLY",  x + PAD + cancelW + btnGap, btnY, applyW,  btnH, "APLICAR",  CLR_ACCENT,    CLR_TEXT, CfgCompact ? Sc(10) : Sc(11));
+   PB("CFG_CANCEL", x + PAD,                    btnY, cancelW, btnH, "CANCELAR", CLR_PANEL_HOV, CLR_TEXT, Sc(9));
+   PB("CFG_APPLY",  x + PAD + cancelW + btnGap, btnY, applyW,  btnH, "APLICAR",  CLR_ACCENT,    CLR_TEXT, Sc(10));
    ChartRedraw(0);
+   ResetCacheEdits();   // sincronizar cache con valores actuales mostrados
 }
 
 //+------------------------------------------------------------------+
@@ -854,39 +869,39 @@ void DibujarConfigDialog()
 //+------------------------------------------------------------------+
 void DibujarBodyRango(int x, int y, int w, int hAvail)
 {
-   int colW    = (w - Sc(14)) / 2;
+   int colW    = (w - Sc(10)) / 2;
    int rowGap  = CFG_ROW_GAP;
-   int dirH    = CfgCompact ? Sc(28) : Sc(34);
-   int dirYofs = CfgCompact ? Sc(54) : Sc(72);
+   int dirH    = Sc(24);
+   int dirYofs = Sc(46);
 
-   PL("CFG_DIR_L", x, y, "DIRECCION", CLR_TEXT_DIM, CfgCompact ? Sc(8) : Sc(9));
-   int  dirBtnW = (w - Sc(10)) / 2;
+   PL("CFG_DIR_L", x, y, "DIRECCION", CLR_TEXT_DIM, Sc(8));
+   int  dirBtnW = (w - Sc(8)) / 2;
    bool isLong  = (p_Direccion == GRID_LONG);
-   PB("CFG_DIR_LONG",  x,                      y + Sc(20), dirBtnW, dirH, "LONG",  isLong ? CLR_GREEN_DIM  : CLR_PANEL_HOV, CLR_TEXT, CfgCompact ? Sc(10) : Sc(11));
-   PB("CFG_DIR_SHORT", x + dirBtnW + Sc(10),   y + Sc(20), dirBtnW, dirH, "SHORT", isLong ? CLR_PANEL_HOV : CLR_RED_DIM,    CLR_TEXT, CfgCompact ? Sc(10) : Sc(11));
+   PB("CFG_DIR_LONG",  x,                     y + Sc(16), dirBtnW, dirH, "LONG",  isLong ? CLR_GREEN_DIM  : CLR_PANEL_HOV, CLR_TEXT, Sc(9));
+   PB("CFG_DIR_SHORT", x + dirBtnW + Sc(8),   y + Sc(16), dirBtnW, dirH, "SHORT", isLong ? CLR_PANEL_HOV : CLR_RED_DIM,    CLR_TEXT, Sc(9));
    int yStart = y;
    y += dirYofs;
 
-   CfgField("E_TECHO",   x,                  y,            colW, "TECHO",          DoubleToString(p_Techo,   _Digits));
-   CfgField("E_PISO",    x + colW + Sc(14),  y,            colW, "PISO",           DoubleToString(p_Piso,    _Digits));
-   CfgField("E_TRIGGER", x,                  y + rowGap,   w,    "TRIGGER",        DoubleToString(p_Trigger, _Digits));
-   CfgField("E_G",       x,                  y + rowGap*2, colW, "G % GEOMETRIA",  DoubleToString(p_G, 4), "%");
-   CfgField("E_VOL",     x + colW + Sc(14),  y + rowGap*2, colW, "VOLUMEN",        DoubleToString(p_Vol, 2), "LOT");
+   CfgField("E_TECHO",   x,                 y,            colW, "TECHO",          DoubleToString(p_Techo,   _Digits));
+   CfgField("E_PISO",    x + colW + Sc(10), y,            colW, "PISO",           DoubleToString(p_Piso,    _Digits));
+   CfgField("E_TRIGGER", x,                 y + rowGap,   w,    "TRIGGER",        DoubleToString(p_Trigger, _Digits));
+   CfgField("E_G",       x,                 y + rowGap*2, colW, "G %",            DoubleToString(p_G, 4), "%");
+   CfgField("E_VOL",     x + colW + Sc(10), y + rowGap*2, colW, "VOLUMEN",        DoubleToString(p_Vol, 2), "LOT");
 
    int cardH = CFG_CARD_H_RANGE;
-   int cyTop = y + rowGap * 2 + (CfgCompact ? Sc(60) : Sc(86));
+   int cyTop = y + rowGap * 2 + Sc(50);
    int yFinDispo = yStart + hAvail;
    if(cyTop + cardH > yFinDispo) cardH = MathMax(Sc(110), yFinDispo - cyTop);
 
    PR("CFG_RANGE_CARD", x, cyTop, w, cardH, CLR_BG_DEEP, CLR_BORDER, 1);
 
-   int padIn   = CfgCompact ? Sc(14) : Sc(20);
-   PL("CFG_RC_HD",  x + padIn, cyTop + Sc(16), "RANGO ACTIVO", CLR_TEXT_FAINT, CfgCompact ? Sc(8) : Sc(9));
-   PL("CFG_RC_NUM", x + padIn, cyTop + Sc(36), IntegerToString(ArraySize(GridLevels)) + " niveles", CLR_TEXT, CfgCompact ? Sc(13) : Sc(16));
-   PL("CFG_RC_SUB", x + padIn, cyTop + Sc(64), DoubleToString(MathAbs(p_Techo - p_Piso) * 10000, 0) + " pips " +
-                                               DoubleToString(p_Piso, _Digits) + " -> " + DoubleToString(p_Techo, _Digits), CLR_TEXT_DIM, CfgCompact ? Sc(8) : Sc(9));
+   int padIn = Sc(12);
+   PL("CFG_RC_HD",  x + padIn, cyTop + Sc(10), "RANGO ACTIVO", CLR_TEXT_FAINT, Sc(8));
+   PL("CFG_RC_NUM", x + padIn, cyTop + Sc(28), IntegerToString(ArraySize(GridLevels)) + " niveles", CLR_TEXT, Sc(12));
+   PL("CFG_RC_SUB", x + padIn, cyTop + Sc(50), DoubleToString(MathAbs(p_Techo - p_Piso) * 10000, 0) + " pips " +
+                                               DoubleToString(p_Piso, _Digits) + " -> " + DoubleToString(p_Techo, _Digits), CLR_TEXT_DIM, Sc(8));
 
-   if(cardH >= Sc(140))
+   if(cardH >= Sc(80))
    {
       int axisX = x + padIn, axisY = cyTop + cardH - Sc(34), axisW = w - padIn * 2;
       PHR("CFG_RC_AXIS",    axisX, axisY, axisW, CLR_BORDER);
@@ -907,28 +922,26 @@ void DibujarBodyRango(int x, int y, int w, int hAvail)
 //+------------------------------------------------------------------+
 void DibujarBodyRiesgo(int x, int y, int w, int hAvail)
 {
-   int colW   = (w - Sc(14)) / 2;
+   int colW   = (w - Sc(10)) / 2;
    int rowGap = CFG_ROW_GAP;
-   int togH   = CfgCompact ? Sc(24) : Sc(28);
-   int togGap = CfgCompact ? Sc(20) : Sc(26);
+   int togH   = Sc(22);
+   int togGap = Sc(16);
 
-   CfgField("E_CAP",  x,                 y,           colW, "CAPITAL",     DoubleToString(p_Capital, 2), "USD");
-   CfgField("E_RISK", x + colW + Sc(14), y,           colW, "RIESGO",      DoubleToString(p_Risk, 2),    "%");
-   CfgField("E_MAXO", x,                 y + rowGap,  colW, "MAX ORDENES", IntegerToString(p_MaxOrd));
+   CfgField("E_CAP",  x,                 y,          colW, "CAPITAL",     DoubleToString(p_Capital, 2), "USD");
+   CfgField("E_RISK", x + colW + Sc(10), y,          colW, "RIESGO",      DoubleToString(p_Risk, 2),    "%");
+   CfgField("E_MAXO", x,                 y + rowGap, colW, "MAX ORDENES", IntegerToString(p_MaxOrd));
 
-   PL("CFG_ML_L", x + colW + Sc(14), y + rowGap, "MODO LIBRE", CLR_TEXT_DIM, CfgCompact ? Sc(8) : Sc(9));
+   PL("CFG_ML_L", x + colW + Sc(10), y + rowGap, "MODO LIBRE", CLR_TEXT_DIM, Sc(8));
    bool freeOff = !p_Libre;
-   PB("CFG_ML_OFF", x + colW + Sc(14),                y + rowGap + togGap, colW / 2, togH, "OFF",
-      freeOff  ? CLR_PANEL_HOV : CLR_BG_DEEP,
-      freeOff  ? CLR_TEXT       : CLR_TEXT_FAINT, CfgCompact ? Sc(9) : Sc(10));
-   PB("CFG_ML_ON",  x + colW + Sc(14) + colW/2,       y + rowGap + togGap, colW / 2, togH, "ON",
-      !freeOff ? CLR_PANEL_HOV : CLR_BG_DEEP,
-      !freeOff ? CLR_TEXT       : CLR_TEXT_FAINT, CfgCompact ? Sc(9) : Sc(10));
-   PE("E_LIBRE", x + colW + Sc(14), y + rowGap + togGap, 1, 1, p_Libre ? "true" : "false");
+   PB("CFG_ML_OFF", x + colW + Sc(10),               y + rowGap + togGap, colW / 2, togH, "OFF",
+      freeOff  ? CLR_PANEL_HOV : CLR_BG_DEEP, freeOff  ? CLR_TEXT : CLR_TEXT_FAINT, Sc(9));
+   PB("CFG_ML_ON",  x + colW + Sc(10) + colW/2,      y + rowGap + togGap, colW / 2, togH, "ON",
+      !freeOff ? CLR_PANEL_HOV : CLR_BG_DEEP, !freeOff ? CLR_TEXT : CLR_TEXT_FAINT, Sc(9));
+   PE("E_LIBRE", x + colW + Sc(10), y + rowGap + togGap, 1, 1, p_Libre ? "true" : "false");
    ObjectSetInteger(0, PFX + "E_E_LIBRE", OBJPROP_HIDDEN, true);
 
    int cardH = CFG_CARD_H_RISK;
-   int cyTop = y + rowGap * 2 + (CfgCompact ? Sc(12) : Sc(20));
+   int cyTop = y + rowGap * 2 + Sc(8);
    int yFinDispo = y + hAvail;
    if(cyTop + cardH > yFinDispo) cardH = MathMax(Sc(140), yFinDispo - cyTop);
 
@@ -936,39 +949,37 @@ void DibujarBodyRiesgo(int x, int y, int w, int hAvail)
    color cardBorder = excedido ? CLR_RED : CLR_GREEN;
    PR("CFG_RSK_CARD", x, cyTop, w, cardH, CLR_BG_DEEP, cardBorder, 1);
 
-   int padIn = CfgCompact ? Sc(14) : Sc(20);
-   PR("CFG_RSK_DOT", x + padIn,         cyTop + Sc(22), Sc(8), Sc(8), excedido ? CLR_RED : CLR_GREEN, excedido ? CLR_RED : CLR_GREEN, 0);
-   PL("CFG_RSK_HD",  x + padIn + Sc(16), cyTop + Sc(18), excedido ? "RIESGO EXCEDIDO" : "RIESGO OK", excedido ? CLR_RED : CLR_GREEN, CfgCompact ? Sc(10) : Sc(11));
+   int padIn = Sc(12);
+   PR("CFG_RSK_DOT", x + padIn,          cyTop + Sc(15), Sc(7), Sc(7), excedido ? CLR_RED : CLR_GREEN, excedido ? CLR_RED : CLR_GREEN, 0);
+   PL("CFG_RSK_HD",  x + padIn + Sc(14), cyTop + Sc(11), excedido ? "RIESGO EXCEDIDO" : "RIESGO OK", excedido ? CLR_RED : CLR_GREEN, Sc(9));
 
    if(excedido)
    {
       double over = (RiesgoRealPct / MathMax(p_Risk, 0.01) - 1.0) * 100.0;
-      PR("CFG_RSK_BG", x + w - Sc(86), cyTop + Sc(18), Sc(70), Sc(20), CLR_RED_DIM, CLR_RED_DIM, 0);
-      PL("CFG_RSK_BT", x + w - Sc(80), cyTop + Sc(22), "+" + DoubleToString(over, 0) + "%", CLR_RED, Sc(9));
+      PR("CFG_RSK_BG", x + w - Sc(72), cyTop + Sc(11), Sc(60), Sc(18), CLR_RED_DIM, CLR_RED_DIM, 0);
+      PL("CFG_RSK_BT", x + w - Sc(66), cyTop + Sc(15), "+" + DoubleToString(over, 0) + "%", CLR_RED, Sc(8));
    }
 
-   int statW  = (w - padIn*2 - Sc(30)) / 3;
-   int statsY = cyTop + (CfgCompact ? Sc(54) : Sc(70));
-   int valSz  = CfgCompact ? Sc(13) : Sc(16);
-   int lblSz  = CfgCompact ? Sc(8)  : Sc(9);
-   PL("CFG_RSK_S1L", x + padIn,                       statsY,         "REAL %",                                  CLR_TEXT_FAINT, lblSz);
-   PL("CFG_RSK_S1V", x + padIn,                       statsY + Sc(20), DoubleToString(RiesgoRealPct, 2),         excedido ? CLR_RED : CLR_GREEN, valSz);
-   PL("CFG_RSK_S2L", x + padIn + statW + Sc(15),      statsY,         "PERDIDA",                                 CLR_TEXT_FAINT, lblSz);
-   PL("CFG_RSK_S2V", x + padIn + statW + Sc(15),      statsY + Sc(20), "$" + DoubleToString(RiesgoRealUSD, 2),    excedido ? CLR_RED : CLR_GREEN, valSz);
-   PL("CFG_RSK_S3L", x + padIn + (statW+Sc(15))*2,    statsY,         "SEGURO",                                  CLR_TEXT_FAINT, lblSz);
-   PL("CFG_RSK_S3V", x + padIn + (statW+Sc(15))*2,    statsY + Sc(20), IntegerToString(MaxOrdersSafe) + " rej",   CLR_AMBER, valSz);
+   int statW  = (w - padIn*2 - Sc(20)) / 3;
+   int statsY = cyTop + Sc(40);
+   PL("CFG_RSK_S1L", x + padIn,                      statsY,         "REAL %",                                  CLR_TEXT_FAINT, Sc(8));
+   PL("CFG_RSK_S1V", x + padIn,                      statsY + Sc(16), DoubleToString(RiesgoRealPct, 2),          excedido ? CLR_RED : CLR_GREEN, Sc(12));
+   PL("CFG_RSK_S2L", x + padIn + statW + Sc(10),     statsY,         "PERDIDA",                                 CLR_TEXT_FAINT, Sc(8));
+   PL("CFG_RSK_S2V", x + padIn + statW + Sc(10),     statsY + Sc(16), "$" + DoubleToString(RiesgoRealUSD, 2),    excedido ? CLR_RED : CLR_GREEN, Sc(12));
+   PL("CFG_RSK_S3L", x + padIn + (statW+Sc(10))*2,   statsY,         "SEGURO",                                  CLR_TEXT_FAINT, Sc(8));
+   PL("CFG_RSK_S3V", x + padIn + (statW+Sc(10))*2,   statsY + Sc(16), IntegerToString(MaxOrdersSafe) + " rej",   CLR_AMBER, Sc(12));
 
-   int barY = cyTop + (CfgCompact ? Sc(118) : Sc(150));
-   if(barY + Sc(34) <= cyTop + cardH - Sc(10))
+   int barY = cyTop + Sc(96);
+   if(barY + Sc(24) <= cyTop + cardH - Sc(8))
    {
-      PL("CFG_RSK_BL1", x + padIn,             barY, "0%", CLR_TEXT_FAINT, lblSz);
-      PL("CFG_RSK_BL2", x + (w/2) - Sc(40),    barY, "OBJETIVO " + DoubleToString(p_Risk,1)+"%", CLR_AMBER, lblSz);
-      PL("CFG_RSK_BL3", x + w - padIn - Sc(22), barY, "2x", CLR_TEXT_FAINT, lblSz);
-      PR("CFG_RSK_BAR_BG", x + padIn, barY + Sc(22), w - padIn*2, Sc(8), CLR_BORDER, CLR_BORDER, 0);
+      PL("CFG_RSK_BL1", x + padIn,              barY, "0%", CLR_TEXT_FAINT, Sc(7));
+      PL("CFG_RSK_BL2", x + (w/2) - Sc(30),     barY, "OBJ " + DoubleToString(p_Risk,1)+"%", CLR_AMBER, Sc(7));
+      PL("CFG_RSK_BL3", x + w - padIn - Sc(16), barY, "2x", CLR_TEXT_FAINT, Sc(7));
+      PR("CFG_RSK_BAR_BG", x + padIn, barY + Sc(14), w - padIn*2, Sc(6), CLR_BORDER, CLR_BORDER, 0);
       double fillPct = MathMin(RiesgoRealPct / (p_Risk * 2.0), 1.0);
       int    fillW   = (int)((w - padIn*2) * fillPct);
-      PR("CFG_RSK_BAR_FL", x + padIn, barY + Sc(22), fillW, Sc(8), excedido ? CLR_RED : CLR_GREEN, excedido ? CLR_RED : CLR_GREEN, 0);
-      PVR("CFG_RSK_BAR_MK", x + padIn + (w - padIn*2) / 2, barY + Sc(18), Sc(16), CLR_AMBER);
+      PR("CFG_RSK_BAR_FL", x + padIn, barY + Sc(14), fillW, Sc(6), excedido ? CLR_RED : CLR_GREEN, excedido ? CLR_RED : CLR_GREEN, 0);
+      PVR("CFG_RSK_BAR_MK", x + padIn + (w - padIn*2) / 2, barY + Sc(11), Sc(12), CLR_AMBER);
    }
 }
 
@@ -977,71 +988,70 @@ void DibujarBodyRiesgo(int x, int y, int w, int hAvail)
 //+------------------------------------------------------------------+
 void DibujarBodySalidas(int x, int y, int w, int hAvail)
 {
-   int colW = (w - Sc(14)) / 2;
+   int colW = (w - Sc(10)) / 2;
    CfgField("E_TP", x,                 y, colW, "TAKE PROFIT", DoubleToString(p_TP, _Digits));
-   CfgField("E_SL", x + colW + Sc(14), y, colW, "STOP LOSS",   DoubleToString(p_SL, _Digits));
+   CfgField("E_SL", x + colW + Sc(10), y, colW, "STOP LOSS",   DoubleToString(p_SL, _Digits));
 
-   int rowFieldH = CfgCompact ? Sc(80) : Sc(110);
-   int cyTop = y + rowFieldH;
+   int cyTop = y + Sc(60);
    int cardH = CFG_CARD_H_EXIT;
    int yFinDispo = y + hAvail;
-   if(cyTop + cardH > yFinDispo) cardH = MathMax(Sc(220), yFinDispo - cyTop);
+   if(cyTop + cardH > yFinDispo) cardH = MathMax(Sc(180), yFinDispo - cyTop);
 
    PR("CFG_EXT_CARD", x, cyTop, w, cardH, CLR_BG_DEEP, CLR_BORDER, 1);
 
-   int padIn = CfgCompact ? Sc(14) : Sc(20);
-   PL("CFG_EXT_HD", x + padIn, cyTop + Sc(16), "DISTANCIAS DESDE TRIGGER", CLR_TEXT_FAINT, CfgCompact ? Sc(8) : Sc(9));
+   int padIn = Sc(12);
+   PL("CFG_EXT_HD", x + padIn, cyTop + Sc(10), "DISTANCIAS DESDE TRIGGER", CLR_TEXT_FAINT, Sc(8));
 
    double dist_tp = MathAbs(p_TP      - p_Trigger);
    double dist_sl = MathAbs(p_Trigger - p_SL);
    double maxD    = MathMax(dist_tp, dist_sl);
-   int    barX    = x + (CfgCompact ? Sc(50) : Sc(64));
-   int    barW    = w - (CfgCompact ? Sc(70) : Sc(88));
-   int    rowH    = CfgCompact ? Sc(38) : Sc(50);
-   int    sepH    = CfgCompact ? Sc(28) : Sc(38);
+   int    barX    = x + Sc(40);
+   int    barW    = w - Sc(56);
+   int    rowH    = Sc(28);
+   int    sepH    = Sc(20);
 
-   int rowY = cyTop + (CfgCompact ? Sc(46) : Sc(62));
-   int sepY = rowY + rowH + (CfgCompact ? Sc(12) : Sc(20));
+   int rowY = cyTop + Sc(32);
+   int sepY = rowY + rowH + Sc(8);
    int slY  = sepY + sepH;
 
    int tpBarW  = (int)(barW * (dist_tp / MathMax(maxD, 0.0001)));
-   PL("CFG_EXT_TPL",  x + padIn,        rowY + (rowH-Sc(20))/2, "TP", CLR_GREEN, CfgCompact ? Sc(10) : Sc(11));
-   PR("CFG_EXT_TPBG", barX,             rowY, barW, rowH, CLR_BG, CLR_BORDER, 1);
-   PR("CFG_EXT_TPLN", barX,             rowY, Sc(4), rowH, CLR_GREEN, CLR_GREEN, 0);
-   PR("CFG_EXT_TPFL", barX + Sc(4),     rowY + 1, tpBarW - Sc(4), rowH - 2, C'18,55,38', C'18,55,38', 0);
-   PL("CFG_EXT_TPV",  barX + Sc(14),    rowY + (rowH-Sc(20))/2, "+" + DoubleToString(dist_tp * 10000, 1) + " pips", CLR_GREEN, CfgCompact ? Sc(11) : Sc(12));
-   PL("CFG_EXT_TPP",  barX + barW - Sc(70), rowY + (rowH-Sc(20))/2, "+" + DoubleToString(dist_tp / p_Trigger * 100, 2) + "%", CLR_GREEN, CfgCompact ? Sc(9) : Sc(10));
+   PL("CFG_EXT_TPL",  x + padIn,            rowY + (rowH-Sc(14))/2, "TP", CLR_GREEN, Sc(9));
+   PR("CFG_EXT_TPBG", barX,                 rowY, barW, rowH, CLR_BG, CLR_BORDER, 1);
+   PR("CFG_EXT_TPLN", barX,                 rowY, Sc(3), rowH, CLR_GREEN, CLR_GREEN, 0);
+   PR("CFG_EXT_TPFL", barX + Sc(3),         rowY + 1, tpBarW - Sc(3), rowH - 2, C'18,55,38', C'18,55,38', 0);
+   PL("CFG_EXT_TPV",  barX + Sc(10),        rowY + (rowH-Sc(14))/2, "+" + DoubleToString(dist_tp * 10000, 1) + " pips", CLR_GREEN, Sc(10));
+   PL("CFG_EXT_TPP",  barX + barW - Sc(60), rowY + (rowH-Sc(14))/2, "+" + DoubleToString(dist_tp / p_Trigger * 100, 2) + "%", CLR_GREEN, Sc(9));
 
-   PL ("CFG_EXT_TGL",  x + padIn,           sepY + Sc(6),       "TRG", CLR_ACCENT, CfgCompact ? Sc(10) : Sc(11));
-   PHR("CFG_EXT_TGLN", barX,                sepY + sepH/2,      barW,  CLR_ACCENT);
-   PL ("CFG_EXT_TGV",  barX + barW - Sc(70), sepY + Sc(4),      DoubleToString(p_Trigger, _Digits), CLR_ACCENT, CfgCompact ? Sc(10) : Sc(11));
+   PL ("CFG_EXT_TGL",  x + padIn,            sepY + Sc(4),       "TRG", CLR_ACCENT, Sc(9));
+   PHR("CFG_EXT_TGLN", barX,                 sepY + sepH/2,      barW,  CLR_ACCENT);
+   PL ("CFG_EXT_TGV",  barX + barW - Sc(60), sepY + Sc(3),       DoubleToString(p_Trigger, _Digits), CLR_ACCENT, Sc(9));
 
    int slBarW = (int)(barW * (dist_sl / MathMax(maxD, 0.0001)));
-   PL("CFG_EXT_SLL",  x + padIn,        slY + (rowH-Sc(20))/2, "SL", CLR_RED, CfgCompact ? Sc(10) : Sc(11));
-   PR("CFG_EXT_SLBG", barX,             slY, barW, rowH, CLR_BG, CLR_BORDER, 1);
-   PR("CFG_EXT_SLLN", barX,             slY, Sc(4), rowH, CLR_RED, CLR_RED, 0);
-   PR("CFG_EXT_SLFL", barX + Sc(4),     slY + 1, slBarW - Sc(4), rowH - 2, C'60,22,22', C'60,22,22', 0);
-   PL("CFG_EXT_SLV",  barX + Sc(14),    slY + (rowH-Sc(20))/2, "-" + DoubleToString(dist_sl * 10000, 1) + " pips", CLR_RED, CfgCompact ? Sc(11) : Sc(12));
-   PL("CFG_EXT_SLP",  barX + barW - Sc(70), slY + (rowH-Sc(20))/2, "-" + DoubleToString(dist_sl / p_Trigger * 100, 2) + "%", CLR_RED, CfgCompact ? Sc(9) : Sc(10));
+   PL("CFG_EXT_SLL",  x + padIn,            slY + (rowH-Sc(14))/2, "SL", CLR_RED, Sc(9));
+   PR("CFG_EXT_SLBG", barX,                 slY, barW, rowH, CLR_BG, CLR_BORDER, 1);
+   PR("CFG_EXT_SLLN", barX,                 slY, Sc(3), rowH, CLR_RED, CLR_RED, 0);
+   PR("CFG_EXT_SLFL", barX + Sc(3),         slY + 1, slBarW - Sc(3), rowH - 2, C'60,22,22', C'60,22,22', 0);
+   PL("CFG_EXT_SLV",  barX + Sc(10),        slY + (rowH-Sc(14))/2, "-" + DoubleToString(dist_sl * 10000, 1) + " pips", CLR_RED, Sc(10));
+   PL("CFG_EXT_SLP",  barX + barW - Sc(60), slY + (rowH-Sc(14))/2, "-" + DoubleToString(dist_sl / p_Trigger * 100, 2) + "%", CLR_RED, Sc(9));
 
    double rr      = dist_tp / MathMax(dist_sl, 0.00001);
    bool   rrGood  = (rr >= 1.5);
    color  rrColor = rrGood ? CLR_GREEN : (rr >= 1.0 ? CLR_AMBER : CLR_RED);
 
-   int rrY = slY + rowH + (CfgCompact ? Sc(14) : Sc(24));
-   int rrH = CfgCompact ? Sc(80) : Sc(110);
-   if(rrY + rrH <= cyTop + cardH - Sc(8))
+   int rrY = slY + rowH + Sc(10);
+   int rrH = Sc(56);
+   if(rrY + rrH <= cyTop + cardH - Sc(6))
    {
-      PR("CFG_EXT_RR_BG", x + padIn,        rrY,                                    w - padIn*2, rrH, CLR_BG, rrColor, 1);
-      PL("CFG_EXT_RR_L",  x + padIn + Sc(20), rrY + (CfgCompact ? Sc(14) : Sc(22)), "RISK / REWARD",                CLR_TEXT_FAINT, CfgCompact ? Sc(9) : Sc(10));
-      PL("CFG_EXT_RR_V",  x + padIn + Sc(20), rrY + (CfgCompact ? Sc(36) : Sc(54)), "1 : " + DoubleToString(rr, 2), rrColor, CfgCompact ? Sc(15) : Sc(20));
+      PR("CFG_EXT_RR_BG", x + padIn,         rrY,                w - padIn*2, rrH, CLR_BG, rrColor, 1);
+      PL("CFG_EXT_RR_L",  x + padIn + Sc(14), rrY + Sc(10),      "RISK / REWARD",                CLR_TEXT_FAINT, Sc(8));
+      PL("CFG_EXT_RR_V",  x + padIn + Sc(14), rrY + Sc(28),      "1 : " + DoubleToString(rr, 2), rrColor, Sc(13));
 
-      string rrLabel = rrGood ? "OPTIMO" : (rr >= 1.0 ? "ACEPTABLE" : "SUBOPTIMO");
-      int    badgeW  = CfgCompact ? Sc(120) : Sc(160);
-      int    badgeH  = CfgCompact ? Sc(32)  : Sc(38);
-      int    badgeX  = x + w - padIn - Sc(20) - badgeW;
+      string rrLabel = rrGood ? "OPTIMO" : (rr >= 1.0 ? "ACEPT." : "SUBOP.");
+      int    badgeW  = Sc(86);
+      int    badgeH  = Sc(26);
+      int    badgeX  = x + w - padIn - Sc(14) - badgeW;
       int    badgeY  = rrY + (rrH - badgeH) / 2;
-      PB("CFG_EXT_RR_PT", badgeX, badgeY, badgeW, badgeH, rrLabel, rrColor, CLR_TEXT, CfgCompact ? Sc(10) : Sc(11));
+      PB("CFG_EXT_RR_PT", badgeX, badgeY, badgeW, badgeH, rrLabel, rrColor, CLR_TEXT, Sc(9));
    }
 }
 
@@ -1049,6 +1059,59 @@ void DibujarBodySalidas(int x, int y, int w, int hAvail)
 //| APLICAR CONFIG                                                   |
 //+------------------------------------------------------------------+
 void CalcularRejillas();
+
+//+------------------------------------------------------------------+
+//| AUTO-APPLY (silencioso) — se ejecuta al salir de un campo OBJ_EDIT
+//+------------------------------------------------------------------+
+void AplicarConfiguracionAuto()
+{
+   // Forzar redraw para que MT5 actualice OBJPROP_TEXT de todos los EDITs
+   ChartRedraw(0);
+
+   // Leer TODOS los campos de TODAS las pestañas (los inactivos pueden no existir)
+   if(ObjectFind(0, PFX + "E_CFG_E_TECHO") >= 0)
+   {
+      double v_techo   = StringToDouble(GetEdit("CFG_E_TECHO"));
+      double v_piso    = StringToDouble(GetEdit("CFG_E_PISO"));
+      double v_trigger = StringToDouble(GetEdit("CFG_E_TRIGGER"));
+      double v_g       = StringToDouble(GetEdit("CFG_E_G"));
+      double v_vol     = StringToDouble(GetEdit("CFG_E_VOL"));
+      if(v_techo > v_piso && v_trigger >= v_piso && v_trigger <= v_techo && v_g > 0 && v_vol > 0)
+      {
+         p_Techo = v_techo; p_Piso = v_piso; p_Trigger = v_trigger; p_G = v_g; p_Vol = v_vol;
+      }
+   }
+   if(ObjectFind(0, PFX + "E_CFG_E_CAP") >= 0)
+   {
+      double v_cap  = StringToDouble(GetEdit("CFG_E_CAP"));
+      double v_risk = StringToDouble(GetEdit("CFG_E_RISK"));
+      int    v_maxo = (int)StringToInteger(GetEdit("CFG_E_MAXO"));
+      if(v_cap > 0 && v_risk > 0 && v_risk <= 100 && v_maxo > 0)
+      {
+         p_Capital = v_cap; p_Risk = v_risk; p_MaxOrd = v_maxo;
+      }
+   }
+   if(ObjectFind(0, PFX + "E_CFG_E_TP") >= 0)
+   {
+      double v_tp = StringToDouble(GetEdit("CFG_E_TP"));
+      double v_sl = StringToDouble(GetEdit("CFG_E_SL"));
+      bool tpSlOk = (p_Direccion == GRID_LONG)
+                    ? (v_tp > p_Trigger && v_sl < p_Trigger)
+                    : (v_tp < p_Trigger && v_sl > p_Trigger);
+      if(tpSlOk) { p_TP = v_tp; p_SL = v_sl; }
+   }
+
+   // Recalcular TODO siempre
+   CalcularRejillas();
+   CalcularRiesgo();
+   DibujarLineasGrid();
+   DibujarPanel();
+   BorrarConfigDialog();
+   DibujarConfigDialog();
+   PrintFormat("AUTO-APPLY: Rejillas=%d, Real=%.2f%% ($%.2f), Seguro=%d",
+               ArraySize(GridLevels), RiesgoRealPct, RiesgoRealUSD, MaxOrdersSafe);
+}
+
 void AplicarConfiguracion()
 {
    bool aplicado = false;
@@ -1417,11 +1480,101 @@ void InicializarCursorDeals()
 //+------------------------------------------------------------------+
 void OnChartEvent(const int id, const long& lparam, const double& dparam, const string& sparam)
 {
+   // ENDEDIT — el usuario terminó de editar un campo (Enter/Tab/click afuera)
+   // Auto-apply en tiempo real
+   if(id == CHARTEVENT_OBJECT_ENDEDIT)
+   {
+      // Solo procesar campos del config dialog
+      if(StringFind(sparam, PFX + "E_CFG_") != 0) return;
+      AplicarConfiguracionAuto();
+      return;
+   }
+
+   // CHART_CHANGE solo redibuja si el chart cambio de tamaño (anti-parpadeo)
    if(id == CHARTEVENT_CHART_CHANGE)
    {
-      DibujarPanel();
-      if(ConfigVisible) DibujarConfigDialog();
-      if(AlertaVisible) DibujarAlerta();
+      int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+      int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+      if(cw != LastChartW || ch != LastChartH)
+      {
+         LastChartW = cw; LastChartH = ch;
+         DibujarPanel();
+         if(ConfigVisible) DibujarConfigDialog();
+         if(AlertaVisible) DibujarAlerta();
+      }
+      return;
+   }
+
+   // MOUSE_MOVE para drag de paneles
+   if(id == CHARTEVENT_MOUSE_MOVE)
+   {
+      int  mx = (int)lparam;
+      int  my = (int)dparam;
+      bool md = ((int)StringToInteger(sparam) & 1) != 0;
+
+      // Dimensiones panel principal
+      int pW = Sc(180);
+      int pHDR = Sc(30);
+
+      // Dimensiones header config dialog
+      int cHDR_y = ConfigPosY;
+      int cHDR_h = CFG_HDR_H;
+
+      // Iniciar drag PANEL principal — solo si click en su header
+      if(md && !DragPanel && !DragConfig &&
+         mx >= PanelPosX && mx <= PanelPosX + pW &&
+         my >= PanelPosY && my <= PanelPosY + pHDR)
+      {
+         DragPanel = true;
+         DragOffX = mx - PanelPosX;
+         DragOffY = my - PanelPosY;
+         ChartSetInteger(0, CHART_MOUSE_SCROLL, false);
+      }
+
+      // Iniciar drag CONFIG — solo si click en su header (y no minimizado)
+      if(md && !DragConfig && !DragPanel && ConfigVisible && !ConfigMinimized &&
+         mx >= ConfigPosX && mx <= ConfigPosX + CfgW &&
+         my >= ConfigPosY && my <= ConfigPosY + cHDR_h)
+      {
+         DragConfig = true;
+         DragOffX = mx - ConfigPosX;
+         DragOffY = my - ConfigPosY;
+         ChartSetInteger(0, CHART_MOUSE_SCROLL, false);
+      }
+
+      // Procesar drag activo
+      if(md && DragPanel)
+      {
+         PanelPosX = mx - DragOffX;
+         PanelPosY = my - DragOffY;
+         int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+         int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+         if(PanelPosX < 0) PanelPosX = 0;
+         if(PanelPosY < 0) PanelPosY = 0;
+         if(PanelPosX > cw - pW) PanelPosX = cw - pW;
+         if(PanelPosY > ch - pHDR) PanelPosY = ch - pHDR;
+         DibujarPanel();
+      }
+      else if(md && DragConfig)
+      {
+         ConfigPosX = mx - DragOffX;
+         ConfigPosY = my - DragOffY;
+         int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+         int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+         if(ConfigPosX < 0) ConfigPosX = 0;
+         if(ConfigPosY < 0) ConfigPosY = 0;
+         if(ConfigPosX > cw - CfgW) ConfigPosX = cw - CfgW;
+         if(ConfigPosY > ch - CfgH) ConfigPosY = ch - CfgH;
+         DibujarConfigDialog();
+      }
+
+      // Soltar — restaurar scroll del chart
+      if(!md && (DragPanel || DragConfig))
+      {
+         DragPanel = false;
+         DragConfig = false;
+         ChartSetInteger(0, CHART_MOUSE_SCROLL, true);
+      }
       return;
    }
 
@@ -1501,7 +1654,12 @@ void OnChartEvent(const int id, const long& lparam, const double& dparam, const 
       return;
    }
    if(sparam == PFX + "B_CFG_APPLY")
-      { ObjectSetInteger(0, sparam, OBJPROP_STATE, false); AplicarConfiguracion(); return; }
+   {
+      ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+      ChartRedraw(0);  // forzar actualizacion de OBJ_EDIT antes de leer
+      AplicarConfiguracion();
+      return;
+   }
 
    // INICIAR
    if(sparam == PFX + "B_START")
@@ -1557,10 +1715,69 @@ void OnChartEvent(const int id, const long& lparam, const double& dparam, const 
 //+------------------------------------------------------------------+
 //| OnInit / OnTick / OnDeinit / OnTradeTransaction                  |
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| OnTimer — verifica los OBJ_EDIT cada 200ms y aplica si cambian   |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   if(!ConfigVisible || ConfigMinimized) return;
+
+   bool changed = false;
+   string cur;
+
+   // Pestaña RANGO
+   if(ObjectFind(0, PFX + "E_CFG_E_TECHO") >= 0)
+   {
+      cur = GetEdit("CFG_E_TECHO");   if(cur != PrevTecho)   { PrevTecho   = cur; changed = true; }
+      cur = GetEdit("CFG_E_PISO");    if(cur != PrevPiso)    { PrevPiso    = cur; changed = true; }
+      cur = GetEdit("CFG_E_TRIGGER"); if(cur != PrevTrigger) { PrevTrigger = cur; changed = true; }
+      cur = GetEdit("CFG_E_G");       if(cur != PrevG)       { PrevG       = cur; changed = true; }
+      cur = GetEdit("CFG_E_VOL");     if(cur != PrevVol)     { PrevVol     = cur; changed = true; }
+   }
+
+   // Pestaña RIESGO
+   if(ObjectFind(0, PFX + "E_CFG_E_CAP") >= 0)
+   {
+      cur = GetEdit("CFG_E_CAP");  if(cur != PrevCap)  { PrevCap  = cur; changed = true; }
+      cur = GetEdit("CFG_E_RISK"); if(cur != PrevRisk) { PrevRisk = cur; changed = true; }
+      cur = GetEdit("CFG_E_MAXO"); if(cur != PrevMaxo) { PrevMaxo = cur; changed = true; }
+   }
+
+   // Pestaña SALIDAS
+   if(ObjectFind(0, PFX + "E_CFG_E_TP") >= 0)
+   {
+      cur = GetEdit("CFG_E_TP"); if(cur != PrevTP) { PrevTP = cur; changed = true; }
+      cur = GetEdit("CFG_E_SL"); if(cur != PrevSL) { PrevSL = cur; changed = true; }
+   }
+
+   if(changed)
+   {
+      AplicarConfiguracionAuto();
+      Print(">>> Cambio detectado en config dialog - auto-aplicado");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Reset cache cuando se redibuja el dialog                         |
+//+------------------------------------------------------------------+
+void ResetCacheEdits()
+{
+   PrevTecho = DoubleToString(p_Techo, _Digits);
+   PrevPiso  = DoubleToString(p_Piso, _Digits);
+   PrevTrigger = DoubleToString(p_Trigger, _Digits);
+   PrevG = DoubleToString(p_G, 4);
+   PrevVol = DoubleToString(p_Vol, 2);
+   PrevCap  = DoubleToString(p_Capital, 2);
+   PrevRisk = DoubleToString(p_Risk, 2);
+   PrevMaxo = IntegerToString(p_MaxOrd);
+   PrevTP = DoubleToString(p_TP, _Digits);
+   PrevSL = DoubleToString(p_SL, _Digits);
+}
+
 int OnInit()
 {
    Print("================================================");
-   Print("GridBot v3.4.2 | Responsive + Minimizar | ", _Symbol);
+   Print("GridBot v3.4.3 | Responsive + Minimizar | ", _Symbol);
    Print("================================================");
    CargarParametros();
    if(!ValidarInputs()) return INIT_PARAMETERS_INCORRECT;
@@ -1570,6 +1787,10 @@ int OnInit()
    trade.SetTypeFillingBySymbol(_Symbol);
    trade.SetDeviationInPoints(10);
    InicializarCursorDeals();
+   ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
+   LastChartW = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   LastChartH = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   EventSetMillisecondTimer(200);  // timer para auto-apply de OBJ_EDIT
    estado = PRECHECK;
    PrintFormat("Risk: Real=%.1f%% ($%.2f) | Seguro=%d rejillas", RiesgoRealPct, RiesgoRealUSD, MaxOrdersSafe);
    DibujarLineasGrid(); DibujarPanel();
@@ -1593,7 +1814,10 @@ void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest&
 
 void OnDeinit(const int reason)
 {
+   EventKillTimer();
+   ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, false);
+   ChartSetInteger(0, CHART_MOUSE_SCROLL, true);
    BorrarTodo();
-   PrintFormat("GridBot v3.4.2 fin. Estado=%d | Acumulado=%.2f USD", estado, GananciaAcumulada);
+   PrintFormat("GridBot v3.4.3 fin. Estado=%d | Acumulado=%.2f USD", estado, GananciaAcumulada);
 }
 //+------------------------------------------------------------------+
