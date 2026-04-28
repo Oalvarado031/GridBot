@@ -596,7 +596,7 @@ void DibujarPanel()
    int minSz = Sc(18); int minY = y + (HDR - minSz) / 2;
    int logoSz = Sc(18); int logoY = y + (HDR - logoSz) / 2;
 
-   int totalH = PanelMinimized ? HDR : Sc(270);
+   int totalH = PanelMinimized ? HDR : Sc(295);
    PR("BG",     x, y, W, totalH, CLR_PANEL,   CLR_BORDER_LT, 1);
    PR("BG_HDR", x, y, W, HDR,    CLR_BG_DEEP, CLR_BG_DEEP,   0);
    if(!PanelMinimized) PHR("HDR_LN", x, y + HDR - 1, W, CLR_BORDER);
@@ -624,38 +624,47 @@ void DibujarPanel()
    color  ganC = GananciaAcumulada >= 0 ? CLR_GREEN : CLR_RED;
    color  rskC = (RiesgoRealPct > p_Risk) ? CLR_RED : CLR_GREEN;
 
-   int cy = y + HDR + gapS + Sc(2);
-   PL("ELAB", x + PAD, cy + 1, "ESTADO",  CLR_TEXT_FAINT, sz7);
-   PL("EVAL", x + COL, cy,     eStr,      eClr,           sz10);
-   cy += rowH + Sc(1); PHR("S1", x + PAD, cy, W - PAD*2, CLR_BORDER); cy += gapS;
+   // Fila base con mas espacio entre lineas para evitar overlap
+   int RH  = Sc(17);  // row height — suficiente para sz7 + sz8 sin overlap
+   int RHS = Sc(19);  // row height seccion — para sz10
+   int GAP = Sc(6);   // gap entre secciones
 
-   PL("BLAB", x + PAD, cy + 1, "PRECIO",  CLR_TEXT_FAINT, sz7);
-   PL("BVAL", x + COL, cy, DoubleToString(bid, _Digits), CLR_TEXT, sz9);
-   cy += rowH - Sc(1);
-   PL("TLAB", x + PAD, cy + 1, "TRIGGER", CLR_TEXT_FAINT, sz7);
-   PL("TVAL", x + COL, cy, DoubleToString(p_Trigger, _Digits), CLR_ACCENT, sz9);
-   cy += rowH + Sc(1); PHR("S2", x + PAD, cy, W - PAD*2, CLR_BORDER); cy += gapS;
+   int cy = y + HDR + GAP;
 
-   // FIX #2: Labels de riesgo mas claros
-   PL("RHTL", x + PAD, cy, "RIESGO", CLR_TEXT_FAINT, sz7); cy += rowH - Sc(3);
-   PL("RCLA", x + PAD, cy + 1, "Objetivo", CLR_TEXT_DIM, sz7);
-   PL("RCVA", x + COL, cy, DoubleToString(p_Risk, 1) + "% / $" + DoubleToString(p_Capital * p_Risk / 100, 0), CLR_GREEN, sz8);
-   cy += rowH - Sc(3);
-   PL("RRLA", x + PAD, cy + 1, "Real",     CLR_TEXT_DIM, sz7);
-   PL("RRVA", x + COL, cy, DoubleToString(RiesgoRealPct, 1) + "% / $" + DoubleToString(RiesgoRealUSD, 1), rskC, sz8);
-   cy += rowH - Sc(3);
-   PL("GRLA", x + PAD, cy + 1, "Uso/Cap",  CLR_TEXT_DIM, sz7);
-   PL("GRVA", x + COL, cy, IntegerToString(RejillasActivas) + "/" + IntegerToString(p_MaxOrd) + " (max " + IntegerToString(MaxOrdersSafe) + ")", CLR_TEXT, sz8);
-   cy += rowH - Sc(3);
-   PL("GPLA", x + PAD, cy + 1, "Gan/rej",  CLR_TEXT_DIM, sz7);
-   PL("GPVA", x + COL, cy, "$" + DoubleToString(GananciaPorRejilla, 2), CLR_GREEN, sz8);
-   cy += rowH - Sc(1); PHR("S3", x + PAD, cy, W - PAD*2, CLR_BORDER); cy += gapS;
+   // — ESTADO —
+   PL("ELAB", x + PAD, cy,      "ESTADO",  CLR_TEXT_FAINT, sz7);
+   PL("EVAL", x + COL, cy - Sc(1), eStr,   eClr,           sz10);
+   cy += RHS; PHR("S1", x + PAD, cy, W - PAD*2, CLR_BORDER); cy += GAP;
 
-   PL("GNLA", x + PAD, cy + 1, "GANANCIA", CLR_TEXT_FAINT, sz7);
-   PL("GNVA", x + COL, cy, ganS, ganC, sz10);
-   cy += rowH + Sc(1); PHR("S4", x + PAD, cy, W - PAD*2, CLR_BORDER); cy += gapS;
+   // — PRECIO / TRIGGER —
+   PL("BLAB", x + PAD, cy,      "PRECIO",  CLR_TEXT_FAINT, sz7);
+   PL("BVAL", x + COL, cy - Sc(1), DoubleToString(bid, _Digits), CLR_TEXT, sz9);
+   cy += RH;
+   PL("TLAB", x + PAD, cy,      "TRIGGER", CLR_TEXT_FAINT, sz7);
+   PL("TVAL", x + COL, cy - Sc(1), DoubleToString(p_Trigger, _Digits), CLR_ACCENT, sz9);
+   cy += RH + Sc(2); PHR("S2", x + PAD, cy, W - PAD*2, CLR_BORDER); cy += GAP;
 
-   int btnH = Sc(24);
+   // — RIESGO —
+   PL("RHTL", x + PAD, cy, "RIESGO", CLR_TEXT_FAINT, sz7); cy += RH - Sc(1);
+   PL("RCLA", x + PAD, cy, "Objetivo",  CLR_TEXT_DIM, sz7);
+   PL("RCVA", x + COL, cy - Sc(1), DoubleToString(p_Risk, 1) + "% / $" + DoubleToString(p_Capital * p_Risk / 100, 0), CLR_GREEN, sz8);
+   cy += RH;
+   PL("RRLA", x + PAD, cy, "Real",      CLR_TEXT_DIM, sz7);
+   PL("RRVA", x + COL, cy - Sc(1), DoubleToString(RiesgoRealPct, 1) + "% / $" + DoubleToString(RiesgoRealUSD, 1), rskC, sz8);
+   cy += RH;
+   PL("GRLA", x + PAD, cy, "Uso/Cap",   CLR_TEXT_DIM, sz7);
+   PL("GRVA", x + COL, cy - Sc(1), IntegerToString(RejillasActivas) + "/" + IntegerToString(p_MaxOrd) + " (max " + IntegerToString(MaxOrdersSafe) + ")", CLR_TEXT, sz8);
+   cy += RH;
+   PL("GPLA", x + PAD, cy, "Gan/rej",   CLR_TEXT_DIM, sz7);
+   PL("GPVA", x + COL, cy - Sc(1), "$" + DoubleToString(GananciaPorRejilla, 2), CLR_GREEN, sz8);
+   cy += RH + Sc(2); PHR("S3", x + PAD, cy, W - PAD*2, CLR_BORDER); cy += GAP;
+
+   // — GANANCIA —
+   PL("GNLA", x + PAD, cy,      "GANANCIA", CLR_TEXT_FAINT, sz7);
+   PL("GNVA", x + COL, cy - Sc(1), ganS,   ganC,           sz10);
+   cy += RHS + Sc(1); PHR("S4", x + PAD, cy, W - PAD*2, CLR_BORDER); cy += GAP;
+
+   int btnH = Sc(26);
    if(estado == PRECHECK || estado == STOPPED)
       PB("START",  x + PAD, cy, W - PAD*2, btnH, "INICIAR BOT", CLR_GREEN_DIM, CLR_TEXT, sz9);
    else if(estado == PENDING)
@@ -668,7 +677,7 @@ void DibujarPanel()
       PB("STOP",  x + PAD + bw + Sc(4), cy, bw, btnH, "PARAR", CLR_RED_DIM, CLR_TEXT, sz8);
    }
 
-   PanelH = (cy + btnH + gapS) - y;
+   PanelH = (cy + btnH + GAP) - y;
    ObjectSetInteger(0, PFX + "R_BG", OBJPROP_YSIZE, PanelH);
    ChartRedraw(0);
 }
@@ -701,21 +710,21 @@ void CalcularLayoutConfig()
    CfgH = MathMin((int)(580*sc), ch - 40); if(CfgH < 420) CfgH = 420;
    CfgCompact = true;
    CFG_HDR_H        = Sc(56);  CFG_TABS_H       = Sc(34);
-   CFG_FOOT_H       = Sc(52);  CFG_BODY_PAD_TOP = Sc(14);
-   CFG_ROW_GAP      = Sc(56);  CFG_CARD_H_RANGE = Sc(96);
-   CFG_CARD_H_RISK  = Sc(168); CFG_CARD_H_EXIT  = Sc(220);
+   CFG_FOOT_H       = Sc(52);  CFG_BODY_PAD_TOP = Sc(16);
+   CFG_ROW_GAP      = Sc(62);  CFG_CARD_H_RANGE = Sc(100);
+   CFG_CARD_H_RISK  = Sc(172); CFG_CARD_H_EXIT  = Sc(224);
    CFG_PAD          = Sc(16);
 }
 
 void CfgField(string id, int x, int y, int w, string label, string val, string suffix = "")
 {
-   int inputH = Sc(22); int gap = Sc(14); int sufW = Sc(34); int lblSz = Sc(8);
+   int inputH = Sc(24); int gap = Sc(16); int sufW = Sc(36); int lblSz = Sc(8);
    PL("CFG_" + id + "_L", x, y, label, CLR_TEXT_DIM, lblSz);
    if(suffix != "")
    {
       PE("CFG_" + id,         x,            y + gap, w - sufW - 2, inputH, val);
       PR("CFG_" + id + "_SB", x + w - sufW, y + gap, sufW, inputH, CLR_BG_DEEP, CLR_BORDER, 1);
-      PL("CFG_" + id + "_S",  x + w - sufW + Sc(10), y + gap + (inputH - Sc(13))/2, suffix, CLR_TEXT_FAINT, lblSz);
+      PL("CFG_" + id + "_S",  x + w - sufW + Sc(8), y + gap + (inputH - Sc(13))/2, suffix, CLR_TEXT_FAINT, lblSz);
    }
    else
       PE("CFG_" + id, x, y + gap, w, inputH, val);
@@ -1332,14 +1341,34 @@ void ProcesarDeals()
    }
 }
 
-int EscanearOrdenesExistentes()
+// Retorna solo posiciones ABIERTAS (ejecutadas) con nuestro magic
+int ContarPosicionesAbiertas2()
+{
+   int c = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong t = PositionGetTicket(i); if(t == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) == Magic_Number && PositionGetString(POSITION_SYMBOL) == _Symbol) c++;
+   }
+   return c;
+}
+
+// Retorna solo ordenes PENDIENTES con nuestro magic
+int ContarOrdenesPendientes()
 {
    int c = 0;
    for(int i = OrdersTotal() - 1; i >= 0; i--)
-      { ulong t = OrderGetTicket(i); if(t==0) continue; if(OrderGetInteger(ORDER_MAGIC)==Magic_Number && OrderGetString(ORDER_SYMBOL)==_Symbol) c++; }
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-      { ulong t = PositionGetTicket(i); if(t==0) continue; if(PositionGetInteger(POSITION_MAGIC)==Magic_Number && PositionGetString(POSITION_SYMBOL)==_Symbol) c++; }
+   {
+      ulong t = OrderGetTicket(i); if(t == 0) continue;
+      if(OrderGetInteger(ORDER_MAGIC) == Magic_Number && OrderGetString(ORDER_SYMBOL) == _Symbol) c++;
+   }
    return c;
+}
+
+// Total combinado (para compatibilidad interna)
+int EscanearOrdenesExistentes()
+{
+   return ContarOrdenesPendientes() + ContarPosicionesAbiertas2();
 }
 
 void InicializarCursorDeals()
@@ -1422,8 +1451,30 @@ void OnChartEvent(const int id, const long& lparam, const double& dparam, const 
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
       if(!(RiesgoRealPct <= p_Risk || p_Libre))
          { MostrarAlerta("RIESGO EXCEDIDO", "Riesgo real supera el objetivo. Activa Modo Libre para forzar.", "Max seguro: " + IntegerToString(MaxOrdersSafe) + " rejillas.", ALERT_WARN); return; }
-      int ex = EscanearOrdenesExistentes();
-      if(ex > 0) { RejillasActivas = ex; estado = ACTIVE; } else { estado = PENDING; }
+
+      int posAbiertas  = ContarPosicionesAbiertas2();
+      int ordPendientes = ContarOrdenesPendientes();
+
+      if(posAbiertas > 0)
+      {
+         // Hay posiciones realmente ejecutadas → ACTIVE
+         RejillasActivas = posAbiertas + ordPendientes;
+         estado = ACTIVE;
+         Print("START: Retomando con ", posAbiertas, " pos abiertas + ", ordPendientes, " pendientes — ACTIVE");
+      }
+      else if(ordPendientes > 0)
+      {
+         // Solo hay pendientes, el trigger ya fue tocado pero sin posicion abierta
+         RejillasActivas = ordPendientes;
+         estado = ACTIVE; // el grid ya fue activado (hay pendientes colocadas)
+         Print("START: Retomando con ", ordPendientes, " ordenes pendientes — ACTIVE (esperando ejecucion)");
+      }
+      else
+      {
+         // No hay nada → esperar trigger
+         estado = PENDING;
+         Print("START: Sin ordenes — PENDING, esperando trigger en ", DoubleToString(p_Trigger, _Digits));
+      }
       DibujarLineasGrid(); DibujarPanel(); return;
    }
    if(sparam == PFX + "B_PAUSE") { ObjectSetInteger(0,sparam,OBJPROP_STATE,false); if(estado==ACTIVE) estado=PAUSED; else if(estado==PAUSED) estado=ACTIVE; DibujarPanel(); return; }
@@ -1573,9 +1624,22 @@ int OnInit()
    EventSetMillisecondTimer(200);
    if(restaurado && (estado==ACTIVE || estado==PAUSED || estado==PENDING))
    {
-      int ex = EscanearOrdenesExistentes();
-      if(ex > 0) RejillasActivas = ex;
-      else if(estado==ACTIVE || estado==PAUSED) estado = PRECHECK;
+      int posAbiertas   = ContarPosicionesAbiertas2();
+      int ordPendientes = ContarOrdenesPendientes();
+      if(posAbiertas > 0 || ordPendientes > 0)
+      {
+         RejillasActivas = posAbiertas + ordPendientes;
+         // Si habia posiciones abiertas → ACTIVE; si solo pendientes → ACTIVE (grid desplegado)
+         if(estado == PENDING && ordPendientes > 0) estado = ACTIVE;
+         PrintFormat("Retomando: %d pos abiertas + %d pendientes → %s", posAbiertas, ordPendientes,
+                     estado==ACTIVE?"ACTIVE":estado==PAUSED?"PAUSED":"PENDING");
+      }
+      else if(estado == ACTIVE || estado == PAUSED)
+      {
+         // No hay nada en el broker → volver a PRECHECK
+         estado = PRECHECK;
+         Print("Sin ordenes en broker — volviendo a PRECHECK");
+      }
    }
    DibujarLineasGrid(); DibujarPanel();
    return INIT_SUCCEEDED;
