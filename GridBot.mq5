@@ -1,12 +1,12 @@
 //+------------------------------------------------------------------+
 //| GridBot.mq5                                                      |
 //| Bot de Grid Geometrico Dinamico para Forex (MT5)                 |
-//| v3.6.0 — UI REDISENADA (paleta profesional fintech)              |
+//| v3.8.0 — Grid lineal en pips (reemplaza G% geometrico)          |
 //+------------------------------------------------------------------+
 #property copyright "Oscar Alvarado"
-#property version   "3.60"
-#property description "Grid Bot Geometrico Dinamico — LONG/SHORT"
-#property description "v3.6.0 — UI rediseno: paleta financiera, sin solapamientos"
+#property version   "3.80"
+#property description "Grid Bot — paso lineal fijo en pips"
+#property description "v3.8.0 — Grid por pips, Netting compatible, P&L broker"
 #property strict
 #include <Trade/Trade.mqh>
 CTrade trade;
@@ -23,7 +23,7 @@ input group "==== RANGO ===="
 input double Techo_Inp   = 1.1800;
 input double Piso_Inp    = 1.1600;
 input double Trigger_Inp = 1.1720;
-input double GPct_Inp    = 0.0025;
+input int    GPips_Inp   = 30;     // paso de rejilla en pips (ej: 30 = 3.0 pips en 5 decimales)
 
 input group "==== CAPITAL Y RIESGO ===="
 input double Capital_Inp   = 3000;
@@ -39,10 +39,20 @@ input double SL_Inp = 1.1550;
 input group "==== AVANZADO ===="
 input int    Magic_Number = 20250424;
 
+input group "==== NOTICIAS ===="
+input bool   NewsFilter_Active = true;          // activar filtro de noticias
+input int    News_MinBefore    = 30;            // minutos a pausar ANTES del evento
+input int    News_MinAfter     = 30;            // minutos a esperar DESPUÉS del evento
+input bool   News_HighImpact   = true;          // filtrar alta importancia (NFP, Powell, tipos)
+input bool   News_MedImpact    = false;         // filtrar media importancia (IPC subyacente, etc.)
+input string News_Countries    = "USD,EUR";     // monedas a vigilar (separadas por coma)
+input bool   News_OnlyCritical = true;          // solo eventos que realmente mueven el mercado
+
 //+------------------------------------------------------------------+
 //| RUNTIME PARAMS                                                   |
 //+------------------------------------------------------------------+
-double p_Techo, p_Piso, p_Trigger, p_G;
+double p_Techo, p_Piso, p_Trigger;
+int    p_G_Pips;    // paso de rejilla en pips enteros (ej: 30)
 double p_Capital, p_Vol, p_Risk;
 int    p_MaxOrd;
 bool   p_Libre;
@@ -63,6 +73,79 @@ double ToPips(double distanciaPrice)
    return distanciaPrice / _Point / PipsDivisor();
 }
 
+// Convierte pips enteros a precio (valor en puntos del par)
+double PipsAPrecio(int pips)
+{
+   return pips * _Point * PipsDivisor();
+}
+
+//+------------------------------------------------------------------+
+//| NETTING: detección y métricas en tiempo real                     |
+//+------------------------------------------------------------------+
+bool DetectarNetting()
+{
+   long mode = AccountInfoInteger(ACCOUNT_MARGIN_MODE);
+   return (mode == ACCOUNT_MARGIN_MODE_RETAIL_NETTING || mode == ACCOUNT_MARGIN_MODE_EXCHANGE);
+}
+
+// Lee directamente del broker el P&L, volumen y posición netting
+void LeerMetricasBroker()
+{
+   GananciaBroker  = 0.0;
+   VolumenPosicion = 0.0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong t = PositionGetTicket(i); if(t == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic_Number) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      GananciaBroker  += PositionGetDouble(POSITION_PROFIT)
+                       + PositionGetDouble(POSITION_SWAP);
+      VolumenPosicion += PositionGetDouble(POSITION_VOLUME);
+   }
+
+   // BUG FIX #4: Hedging → panel muestra ganancia TOTAL = cerradas + flotante actual
+   // BUG FIX #5: Netting  → solo actualizar GananciaAcumulada si hay posición abierta
+   //             (evitar resetear a 0 cuando el bot está en STOPPED sin posiciones)
+   if(EsCuentaNetting)
+   {
+      if(VolumenPosicion > 0.0)
+         GananciaAcumulada = GananciaBroker;   // Netting: 1 posición fusionada = toda la ganancia
+      // Si no hay posición, GananciaAcumulada conserva su último valor (ya realizado)
+   }
+   else
+   {
+      // Hedging: GananciaBroker = flotante. Panel muestra total = historial + flotante.
+      // GananciaAcumulada se actualiza en LogOperacion (deals cerrados).
+      // Aquí sumamos el flotante actual para que el display sea completo.
+      // No modificamos GananciaAcumulada para no corromper el historial de deals.
+   }
+}
+
+// Netting: aplica SL a la posición única cada vez que se agrega una rejilla
+void ActualizarSL_Netting()
+{
+   if(!EsCuentaNetting) return;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong t = PositionGetTicket(i); if(t == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic_Number) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      double curSL = PositionGetDouble(POSITION_SL);
+      double curTP = PositionGetDouble(POSITION_TP);
+      // Tolerancia de 10 puntos: evita modificaciones innecesarias por redondeo del broker
+      // _Point solo (0.00001 para EURUSD) era demasiado ajustado — el broker puede devolver
+      // el SL con una diferencia de 1-2 puntos por normalización interna
+      if(MathAbs(curSL - p_SL) > _Point * 10)
+      {
+         if(!trade.PositionModify(t, p_SL, curTP))
+            PrintFormat("FALLO PositionModify SL=%.5f rc=%u", p_SL, trade.ResultRetcode());
+         else
+            PrintFormat("SL Netting actualizado → %.5f (posición %I64u)", p_SL, t);
+      }
+      break; // en Netting solo hay 1 posición por símbolo
+   }
+}
+
 //+------------------------------------------------------------------+
 //| ESTADO Y GLOBALES                                                |
 //+------------------------------------------------------------------+
@@ -74,10 +157,21 @@ bool      AlertaVisible    = false;
 bool      PanelMinimized   = false;
 bool      ConfigMinimized  = false;
 
-bool DragPanel = false, DragConfig = false;
+bool DragPanel = false, DragConfig = false, DragNews = false;
 int  DragOffX  = 0, DragOffY = 0;
 int  PanelPosX = 12, PanelPosY = 12;
 int  ConfigPosX = -1, ConfigPosY = -1;
+int  NewsPosX   = -1, NewsPosY  = -1;   // -1 = posición inicial automática
+bool NewsVisible    = true;             // panel noticias visible
+bool NewsMinimized  = false;            // panel noticias minimizado
+
+// Caché de próximos eventos para el panel de noticias (hasta 6)
+#define MAX_NEWS_CACHE 6
+datetime NewsCache_Times     [MAX_NEWS_CACHE];
+string   NewsCache_Names     [MAX_NEWS_CACHE];
+string   NewsCache_Currencies[MAX_NEWS_CACHE];
+bool     NewsCache_IsHigh    [MAX_NEWS_CACHE];   // true=HIGH, false=MODERATE
+int      NewsCache_Count = 0;
 
 int  LastChartW = 0, LastChartH = 0;
 
@@ -98,6 +192,20 @@ double RiesgoRealUSD       = 0.0;
 double RiesgoRealPct       = 0.0;
 double GananciaPorRejilla  = 0.0;
 const string PFX = "GB36_";
+
+// Netting y métricas en tiempo real desde el broker
+bool   EsCuentaNetting     = false;   // detectado en OnInit
+double GananciaBroker      = 0.0;    // leído directo del broker cada tick
+double VolumenPosicion      = 0.0;    // volumen real acumulado de la posición
+
+// Filtro de noticias económicas
+bool     PausadoPorNoticias = false;   // true cuando el bot está en pausa por un evento
+string   NoticiaActual      = "";      // nombre del evento que causó la pausa
+datetime NoticiaHora        = 0;       // hora del evento activo
+datetime UltimaRevisionNot     = 0;       // caché: evitar llamar al calendario en cada tick
+datetime UltimaRevisionProxima = 0;       // caché separado para BuscarProximaNoticia (5 min)
+datetime ProximaNoticiaTime = 0;       // hora del próximo evento relevante (para el panel)
+string   ProximaNoticiaNom  = "";      // nombre del próximo evento
 
 double GUIScale      = 1.0;
 datetime BotStartTime = 0;
@@ -184,7 +292,7 @@ void CargarParametros()
 {
    p_Direccion = Direccion_Inp;
    p_Techo   = Techo_Inp;   p_Piso    = Piso_Inp;
-   p_Trigger = Trigger_Inp; p_G       = GPct_Inp;
+   p_Trigger = Trigger_Inp; p_G_Pips  = GPips_Inp;
    p_Capital = Capital_Inp; p_Vol     = Volumen_Inp;
    p_Risk    = RiskPct_Inp; p_MaxOrd  = MaxOrders_Inp;
    p_Libre   = ModoLibre_Inp;
@@ -197,6 +305,77 @@ void BorrarTodo()
    {
       string n = ObjectName(0, i);
       if(StringFind(n, PFX) == 0) ObjectDelete(0, n);
+   }
+   ChartRedraw(0);
+}
+
+//+------------------------------------------------------------------+
+//| MOVER PANELES SIN BORRAR (anti-parpadeo en drag)                 |
+//+------------------------------------------------------------------+
+// Desplaza todos los objetos del panel principal por delta (dx,dy)
+// Sin borrar ni recrear — solo actualiza XDISTANCE/YDISTANCE
+void MoverPanelPrincipal(int dx, int dy)
+{
+   if(dx == 0 && dy == 0) return;
+   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+   {
+      string n = ObjectName(0, i);
+      if(StringFind(n, PFX) != 0) continue;
+      // Saltar objetos que NO pertenecen al panel principal
+      if(StringFind(n, PFX+"L_TP")       == 0) continue;   // líneas gráfico
+      if(StringFind(n, PFX+"L_SL")       == 0) continue;
+      if(StringFind(n, PFX+"L_TECHO")    == 0) continue;
+      if(StringFind(n, PFX+"L_PISO")     == 0) continue;
+      if(StringFind(n, PFX+"L_TRIGGER")  == 0) continue;
+      if(StringFind(n, PFX+"L_GRID_")    == 0) continue;
+      if(StringFind(n, PFX+"L_TPACT_")   == 0) continue;
+      if(StringFind(n, PFX+"T_")         == 0) continue;
+      if(StringFind(n, PFX+"R_CFG_")     == 0) continue;   // config
+      if(StringFind(n, PFX+"L_CFG_")     == 0) continue;
+      if(StringFind(n, PFX+"B_CFG_")     == 0) continue;
+      if(StringFind(n, PFX+"E_CFG_")     == 0) continue;
+      if(StringFind(n, PFX+"NW_")        == 0) continue;   // noticias
+      if(StringFind(n, PFX+"R_ALR")      == 0) continue;   // alertas
+      if(StringFind(n, PFX+"L_ALR")      == 0) continue;
+      if(StringFind(n, PFX+"B_ALR")      == 0) continue;
+      // Saltar botones en esquina CORNER_RIGHT_UPPER
+      if(ObjectGetInteger(0, n, OBJPROP_CORNER) != CORNER_LEFT_UPPER) continue;
+      ObjectSetInteger(0, n, OBJPROP_XDISTANCE, ObjectGetInteger(0,n,OBJPROP_XDISTANCE) + dx);
+      ObjectSetInteger(0, n, OBJPROP_YDISTANCE, ObjectGetInteger(0,n,OBJPROP_YDISTANCE) + dy);
+   }
+   ChartRedraw(0);
+}
+
+// Desplaza todos los objetos del config dialog por delta
+void MoverConfigDialog(int dx, int dy)
+{
+   if(dx == 0 && dy == 0) return;
+   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+   {
+      string n = ObjectName(0, i);
+      bool esCfg = (StringFind(n, PFX+"R_CFG_") == 0 ||
+                    StringFind(n, PFX+"L_CFG_") == 0 ||
+                    StringFind(n, PFX+"B_CFG_") == 0 ||
+                    StringFind(n, PFX+"E_CFG_") == 0);
+      if(!esCfg) continue;
+      if(ObjectGetInteger(0, n, OBJPROP_CORNER) != CORNER_LEFT_UPPER) continue;
+      ObjectSetInteger(0, n, OBJPROP_XDISTANCE, ObjectGetInteger(0,n,OBJPROP_XDISTANCE) + dx);
+      ObjectSetInteger(0, n, OBJPROP_YDISTANCE, ObjectGetInteger(0,n,OBJPROP_YDISTANCE) + dy);
+   }
+   ChartRedraw(0);
+}
+
+// Desplaza todos los objetos del panel de noticias por delta
+void MoverPanelNoticias(int dx, int dy)
+{
+   if(dx == 0 && dy == 0) return;
+   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+   {
+      string n = ObjectName(0, i);
+      if(StringFind(n, PFX+"NW_") != 0) continue;
+      if(ObjectGetInteger(0, n, OBJPROP_CORNER) != CORNER_LEFT_UPPER) continue;
+      ObjectSetInteger(0, n, OBJPROP_XDISTANCE, ObjectGetInteger(0,n,OBJPROP_XDISTANCE) + dx);
+      ObjectSetInteger(0, n, OBJPROP_YDISTANCE, ObjectGetInteger(0,n,OBJPROP_YDISTANCE) + dy);
    }
    ChartRedraw(0);
 }
@@ -221,9 +400,11 @@ void BorrarLineasGrid()
 void CalcularRiesgo()
 {
    double presupuesto = p_Capital * (p_Risk / 100.0);
+   // TickValue actualizado en tiempo real del broker (incluye conversión de divisa)
    double tickVal = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSz  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    if(tickSz <= 0) tickSz = _Point;
+   if(tickVal <= 0) { Print("WARN: TickValue=0 — usando estimacion"); tickVal = 10.0; }
 
    double acum = 0;
    MaxOrdersSafe = 0;
@@ -245,7 +426,11 @@ void CalcularRiesgo()
    }
    RiesgoRealUSD = rt;
    RiesgoRealPct = (p_Capital > 0) ? rt / p_Capital * 100 : 0;
-   if(total > 0) GananciaPorRejilla = (GridLevels[0] * p_G) / tickSz * tickVal * p_Vol;
+
+   // Gan/rej: exactamente el paso configurado en pips, convertido a USD con TickValue del broker
+   double paso = PipsAPrecio(p_G_Pips);
+   if(total > 0)
+      GananciaPorRejilla = paso / tickSz * tickVal * p_Vol;
 }
 
 //+------------------------------------------------------------------+
@@ -297,11 +482,12 @@ void DibujarTPsActivos()
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
 
       double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double paso      = PipsAPrecio(p_G_Pips);
       double tpPrice;
       if(p_Direccion == GRID_LONG)
-         tpPrice = NormalizeDouble(openPrice * (1.0 + p_G), _Digits);
+         tpPrice = NormalizeDouble(openPrice + paso, _Digits);   // TP = entrada + paso
       else
-         tpPrice = NormalizeDouble(openPrice / (1.0 + p_G), _Digits);
+         tpPrice = NormalizeDouble(openPrice - paso, _Digits);   // TP = entrada - paso
 
       string sid = IntegerToString(ticket);
       string nL  = PFX + "L_TPACT_" + sid;
@@ -587,18 +773,36 @@ void DibujarAlerta()
 //+------------------------------------------------------------------+
 void DibujarBotonesEsquina()
 {
-   int btnW = Sc(92); int btnH = Sc(28); int badgeW = Sc(72); int gap = Sc(6); int margin = Sc(10);
+   int btnH = Sc(28); int gap = Sc(6); int margin = Sc(10);
 
-   PB("CFGBTN", btnW + margin, margin, btnW, btnH, "CONFIG", CLR_ACCENT_DIM, CLR_TEXT, Sc(9), "Arial");
+   // CONFIG
+   int cfgW = Sc(92);
+   PB("CFGBTN", cfgW + margin, margin, cfgW, btnH, "CONFIG", CLR_ACCENT_DIM, CLR_TEXT, Sc(9), "Arial");
    ObjectSetInteger(0, PFX + "B_CFGBTN", OBJPROP_CORNER,       CORNER_RIGHT_UPPER);
-   ObjectSetInteger(0, PFX + "B_CFGBTN", OBJPROP_XDISTANCE,    btnW + margin);
+   ObjectSetInteger(0, PFX + "B_CFGBTN", OBJPROP_XDISTANCE,    cfgW + margin);
    ObjectSetInteger(0, PFX + "B_CFGBTN", OBJPROP_YDISTANCE,    margin);
    ObjectSetInteger(0, PFX + "B_CFGBTN", OBJPROP_BORDER_COLOR, CLR_ACCENT);
 
-   color  dirC = (p_Direccion == GRID_LONG) ? CLR_GREEN : CLR_RED;
+   // NEWS — activo cuando hay noticias configuradas, se ilumina si hay evento activo
+   int newsW = Sc(78);
+   color newsBg  = (NewsFilter_Active && PausadoPorNoticias) ? CLR_RED_DIM :
+                   NewsFilter_Active ? CLR_ACCENT_DEEP : CLR_BG_DEEP;
+   color newsBrd = (NewsFilter_Active && PausadoPorNoticias) ? CLR_RED :
+                   NewsFilter_Active ? CLR_ACCENT_DIM : CLR_BORDER;
+   string newsLabel = (NewsFilter_Active && PausadoPorNoticias) ? "NEWS !" : "NEWS";
+   int newsXDist = cfgW + margin + gap + newsW;
+   PB("NEWSBTN", newsXDist, margin, newsW, btnH, newsLabel, newsBg, CLR_TEXT, Sc(9), "Arial");
+   ObjectSetInteger(0, PFX + "B_NEWSBTN", OBJPROP_CORNER,       CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0, PFX + "B_NEWSBTN", OBJPROP_XDISTANCE,    newsXDist);
+   ObjectSetInteger(0, PFX + "B_NEWSBTN", OBJPROP_YDISTANCE,    margin);
+   ObjectSetInteger(0, PFX + "B_NEWSBTN", OBJPROP_BORDER_COLOR, newsBrd);
+
+   // LONG/SHORT badge
+   color  dirC  = (p_Direccion == GRID_LONG) ? CLR_GREEN : CLR_RED;
    color  dirBg = (p_Direccion == GRID_LONG) ? CLR_GREEN_DEEP : CLR_RED_DEEP;
-   string dirT = (p_Direccion == GRID_LONG) ? "▲ LONG" : "▼ SHORT";
-   int badgeXDist = btnW + margin + gap + badgeW;
+   string dirT  = (p_Direccion == GRID_LONG) ? "▲ LONG" : "▼ SHORT";
+   int badgeW = Sc(72);
+   int badgeXDist = cfgW + margin + gap + newsW + gap + badgeW;
    PB("DIRBADGE", badgeXDist, margin, badgeW, btnH, dirT, dirBg, dirC, Sc(9), "Arial");
    ObjectSetInteger(0, PFX + "B_DIRBADGE", OBJPROP_CORNER,       CORNER_RIGHT_UPPER);
    ObjectSetInteger(0, PFX + "B_DIRBADGE", OBJPROP_XDISTANCE,    badgeXDist);
@@ -657,8 +861,8 @@ void DibujarPanel()
    int minSz  = Sc(22); int minY  = y + (HDR - minSz) / 2;
    int logoSz = Sc(24); int logoY = y + (HDR - logoSz) / 2;
 
-   // Calculamos la altura total dinamicamente
-   int totalH = PanelMinimized ? HDR : Sc(382);
+   // ── Ajuste de altura del fondo — ya no incluye noticias (panel dedicado)
+   int totalH = PanelMinimized ? HDR : Sc(392);
    PR("BG",     x, y, W, totalH, CLR_PANEL,   CLR_BORDER_LT, 1);
    PR("BG_HDR", x, y, W, HDR,    CLR_BG_DEEP, CLR_BG_DEEP,   0);
    if(!PanelMinimized) PHR("HDR_LN", x, y + HDR - 1, W, CLR_BORDER);
@@ -667,7 +871,7 @@ void DibujarPanel()
    PB("LOGO", x + PAD, logoY, logoSz, logoSz, "G", CLR_ACCENT, CLR_TEXT, Sc(11), "Arial Black");
    ObjectSetInteger(0, PFX + "B_LOGO", OBJPROP_BORDER_COLOR, CLR_ACCENT);
    PL("HTIT", x + PAD + logoSz + Sc(9), y + (HDR - Sc(13))/2 + Sc(1), "GRIDBOT", CLR_TEXT, sz10, "Arial");
-   PL("HVER", x + PAD + logoSz + Sc(9) + Sc(58), y + (HDR - Sc(13))/2 + Sc(2), "v3.6", CLR_TEXT_FAINT, sz8, "Arial");
+   PL("HVER", x + PAD + logoSz + Sc(9) + Sc(58), y + (HDR - Sc(13))/2 + Sc(2), "v3.8", CLR_TEXT_FAINT, sz8, "Arial");
    PB("MINBTN", x + W - PAD - minSz, minY, minSz, minSz, minIcon, CLR_ELEV, CLR_TEXT_DIM, Sc(11), "Arial");
    ObjectSetInteger(0, PFX + "B_MINBTN", OBJPROP_BORDER_COLOR, CLR_BORDER);
    DibujarBotonesEsquina();
@@ -681,20 +885,32 @@ void DibujarPanel()
       case PRECHECK: eStr = "PRE-CHECK"; eClr = CLR_AMBER;  break;
       case PENDING:  eStr = "PENDING";   eClr = CLR_ACCENT; break;
       case ACTIVE:   eStr = "ACTIVE";    eClr = CLR_GREEN;  break;
-      case PAUSED:   eStr = "PAUSED";    eClr = CLR_AMBER;  break;
+      case PAUSED:
+         // Diferenciar pausa por noticias vs pausa por rango
+         eStr = PausadoPorNoticias ? "NEWS" : "PAUSED";
+         eClr = PausadoPorNoticias ? CLR_RED : CLR_AMBER;
+         break;
       case STOPPED:  eStr = "STOPPED";   eClr = CLR_RED;    break;
       default:       eStr = "???";       eClr = CLR_TEXT;
    }
-   color eBg = (estado==PRECHECK || estado==PAUSED) ? CLR_AMBER_DEEP :
+   color eBg = (estado==PRECHECK || (estado==PAUSED && !PausadoPorNoticias)) ? CLR_AMBER_DEEP :
                (estado==ACTIVE) ? CLR_GREEN_DEEP :
+               (estado==PAUSED && PausadoPorNoticias) ? CLR_RED_DEEP :
                (estado==STOPPED) ? CLR_RED_DEEP : CLR_ACCENT_DEEP;
-   color eBrd = (estado==PRECHECK || estado==PAUSED) ? CLR_AMBER_DIM :
+   color eBrd = (estado==PRECHECK || (estado==PAUSED && !PausadoPorNoticias)) ? CLR_AMBER_DIM :
                 (estado==ACTIVE) ? CLR_GREEN_DIM :
+                (estado==PAUSED && PausadoPorNoticias) ? CLR_RED_DIM :
                 (estado==STOPPED) ? CLR_RED_DIM : CLR_ACCENT_DIM;
 
    double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   string ganS = (GananciaAcumulada >= 0 ? "+$" : "-$") + DoubleToString(MathAbs(GananciaAcumulada), 2);
-   color  ganC = (GananciaAcumulada > 0) ? CLR_GREEN : (GananciaAcumulada < 0 ? CLR_RED : CLR_TEXT);
+   // GANANCIA DISPLAY:
+   // Netting  → GananciaBroker = P&L completo de la posición fusionada del broker
+   // Hedging  → GananciaAcumulada (deals cerrados) + GananciaBroker (flotante actual)
+   double ganDisplay = EsCuentaNetting
+      ? GananciaBroker
+      : (GananciaAcumulada + GananciaBroker);
+   string ganS = (ganDisplay >= 0 ? "+$" : "-$") + DoubleToString(MathAbs(ganDisplay), 2);
+   color  ganC = (ganDisplay > 0) ? CLR_GREEN : (ganDisplay < 0 ? CLR_RED : CLR_TEXT);
    color  rskC = (RiesgoRealPct > p_Risk) ? CLR_RED : CLR_GREEN;
 
    int cy = y + HDR + GAP;
@@ -749,7 +965,6 @@ void DibujarPanel()
 
    // Uso/Cap — 2 líneas compactas para evitar solapamiento con etiqueta
    PL("GRLA", LBL_X, cy + Sc(2), "Uso / Cap", CLR_TEXT_DIM, sz8, "Arial");
-   // Valor en 2 partes: rejillas/max derecha, max-seguro debajo-derecha
    PLA("GRVA",  VAL_X, cy + Sc(2),
        IntegerToString(RejillasActivas) + " / " + IntegerToString(p_MaxOrd),
        CLR_TEXT, sz9, ANCHOR_RIGHT_UPPER, "Arial");
@@ -758,18 +973,27 @@ void DibujarPanel()
        CLR_TEXT_DIM, sz8, ANCHOR_RIGHT_UPPER, "Arial");
    cy += LH + Sc(4);
 
-   // Gan/rej
+   // Gan/rej — usa TickValue real para precisión
    PL("GPLA", LBL_X, cy + Sc(3), "Gan / rej", CLR_TEXT_DIM, sz8, "Arial");
    PLA("GPVA", VAL_X, cy + Sc(3),
        "$"+DoubleToString(GananciaPorRejilla,2),
        CLR_GREEN, sz9, ANCHOR_RIGHT_UPPER, "Arial");
    cy += LH + SEC_GAP;
 
-   // ── GANANCIA (card destacada) ───────────────────────────────
-   int gnH = Sc(44);
+   // ── GANANCIA (card destacada) — leída directo del broker ────
+   // En Netting: beneficio de la posición única fusionada
+   // En Hedging: suma de todas las posiciones abiertas
+   int gnH = Sc(52);
    PR("GNCARD", LBL_X, cy, W - PAD*2, gnH, CLR_INPUT, CLR_BORDER, 1);
-   PL("GNLA",  LBL_X + Sc(10), cy + Sc(7),  "GANANCIA ACUMULADA", CLR_TEXT_FAINT, sz8, "Arial");
-   PLA("GNVA", VAL_X - Sc(10), cy + Sc(22), ganS, ganC, sz12, ANCHOR_RIGHT_UPPER, "Arial");
+   string gnLabel = EsCuentaNetting ? "BENEFICIO NETTING (broker)" : "GANANCIA ACUMULADA";
+   PL("GNLA", LBL_X + Sc(10), cy + Sc(6), gnLabel, CLR_TEXT_FAINT, sz8, "Arial");
+   PLA("GNVA", VAL_X - Sc(10), cy + Sc(24), ganS, ganC, sz12, ANCHOR_RIGHT_UPPER, "Arial");
+   // Volumen real de la posición (no el configurado)
+   if(VolumenPosicion > 0)
+   {
+      string volStr = "vol " + DoubleToString(VolumenPosicion, 2) + " lot";
+      PL("GNVOL", LBL_X + Sc(10), cy + gnH - Sc(14), volStr, CLR_TEXT_FAINT, sz8, "Arial");
+   }
    cy += gnH + GAP;
 
    // ── BOTONES ─────────────────────────────────────────────────
@@ -856,11 +1080,15 @@ void DibujarConfigDialog()
    {
       BorrarConfigDialog();
       int bw = Sc(260); int bh = Sc(40);
-      int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
-      int bx = (cw - bw) / 2; int by = Sc(60);
+      int cw2 = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+      int ch2 = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+      // Usar la posición guardada — si es la primera vez, centrar
+      if(ConfigPosX < 0 || ConfigPosY < 0) { ConfigPosX = (cw2 - bw) / 2; ConfigPosY = Sc(60); }
+      int bx = MathMax(0, MathMin(ConfigPosX, cw2 - bw));
+      int by = MathMax(0, MathMin(ConfigPosY, ch2 - bh));
+      int rsz = bh - Sc(10);
       PR("CFG_BG",  bx, by, bw, bh, CLR_BG_DEEP, CLR_ACCENT, 2);
       PL("CFG_TIT", bx + Sc(14), by + (bh - Sc(13))/2 + Sc(1), "CONFIG (minimizada)", CLR_TEXT, Sc(10), "Arial");
-      int rsz = bh - Sc(10);
       PB("CFG_MIN", bx + bw - rsz - rsz - Sc(12), by + Sc(5), rsz, rsz, "+", CLR_ELEV,    CLR_TEXT, Sc(11), "Arial");
       PB("CFG_X",   bx + bw - rsz - Sc(6),         by + Sc(5), rsz, rsz, "✕", CLR_RED_DIM, CLR_TEXT, Sc(11), "Arial");
       ChartRedraw(0); return;
@@ -993,8 +1221,8 @@ void DibujarBodyRango(int x, int y, int w, int hAvail)
    CfgField("E_TRIGGER", x, y + rowGap, w, "TRIGGER — PRECIO DE ACTIVACION", DoubleToString(p_Trigger, _Digits));
 
    // --- Fila 3: G% / VOLUMEN ---
-   CfgField("E_G",   x,                 y + rowGap*2, colW, "PASO GEOMETRICO", DoubleToString(p_G, 4),   "%");
-   CfgField("E_VOL", x + colW + Sc(14), y + rowGap*2, colW, "VOLUMEN",         DoubleToString(p_Vol, 2), "LOT");
+   CfgField("E_G",   x,                 y + rowGap*2, colW, "PASO DE REJILLA", IntegerToString(p_G_Pips), "PIPS");
+   CfgField("E_VOL", x + colW + Sc(14), y + rowGap*2, colW, "VOLUMEN",         DoubleToString(p_Vol, 2),    "LOT");
 
    // --- Card RANGO ACTIVO ---
    int cyTop     = y + rowGap * 2 + Sc(64);
@@ -1264,11 +1492,13 @@ void AplicarConfiguracionAuto()
    ChartRedraw(0);
    if(ObjectFind(0, PFX + "E_CFG_E_TECHO") >= 0)
    {
-      double vt = StringToDouble(GetEdit("CFG_E_TECHO")); double vp = StringToDouble(GetEdit("CFG_E_PISO"));
-      double vtr = StringToDouble(GetEdit("CFG_E_TRIGGER")); double vg = StringToDouble(GetEdit("CFG_E_G"));
-      double vv = StringToDouble(GetEdit("CFG_E_VOL"));
-      if(vt > vp && vtr >= vp && vtr <= vt && vg > 0 && vv > 0)
-         { p_Techo = vt; p_Piso = vp; p_Trigger = vtr; p_G = vg; p_Vol = vv; }
+      double vt  = StringToDouble(GetEdit("CFG_E_TECHO"));
+      double vp  = StringToDouble(GetEdit("CFG_E_PISO"));
+      double vtr = StringToDouble(GetEdit("CFG_E_TRIGGER"));
+      int    vgp = (int)StringToInteger(GetEdit("CFG_E_G"));   // pips enteros
+      double vv  = StringToDouble(GetEdit("CFG_E_VOL"));
+      if(vt > vp && vtr >= vp && vtr <= vt && vgp > 0 && vv > 0)
+         { p_Techo = vt; p_Piso = vp; p_Trigger = vtr; p_G_Pips = vgp; p_Vol = vv; }
    }
    if(ObjectFind(0, PFX + "E_CFG_E_CAP") >= 0)
    {
@@ -1290,12 +1520,14 @@ void AplicarConfiguracion()
    bool aplicado = false;
    if(ConfigTab == 0)
    {
-      double vt = StringToDouble(GetEdit("CFG_E_TECHO")); double vp = StringToDouble(GetEdit("CFG_E_PISO"));
-      double vtr = StringToDouble(GetEdit("CFG_E_TRIGGER")); double vg = StringToDouble(GetEdit("CFG_E_G"));
-      double vv = StringToDouble(GetEdit("CFG_E_VOL"));
-      if(vt > vp && vtr >= vp && vtr <= vt && vg > 0 && vv > 0)
-         { p_Techo = vt; p_Piso = vp; p_Trigger = vtr; p_G = vg; p_Vol = vv; aplicado = true; }
-      else MostrarAlerta("DATOS INVALIDOS", "Rango invalido. Techo > Piso, Trigger entre ambos, G% > 0, Vol > 0.", "", ALERT_ERROR);
+      double vt  = StringToDouble(GetEdit("CFG_E_TECHO"));
+      double vp  = StringToDouble(GetEdit("CFG_E_PISO"));
+      double vtr = StringToDouble(GetEdit("CFG_E_TRIGGER"));
+      int    vgp = (int)StringToInteger(GetEdit("CFG_E_G"));   // pips enteros
+      double vv  = StringToDouble(GetEdit("CFG_E_VOL"));
+      if(vt > vp && vtr >= vp && vtr <= vt && vgp > 0 && vv > 0)
+         { p_Techo = vt; p_Piso = vp; p_Trigger = vtr; p_G_Pips = vgp; p_Vol = vv; aplicado = true; }
+      else MostrarAlerta("DATOS INVALIDOS", "Techo > Piso, Trigger en rango, Paso > 0 pips, Volumen > 0.", "", ALERT_ERROR);
    }
    else if(ConfigTab == 1)
    {
@@ -1322,7 +1554,7 @@ void AplicarConfiguracion()
       PE_Force("CFG_E_TECHO",   DoubleToString(p_Techo,   _Digits));
       PE_Force("CFG_E_PISO",    DoubleToString(p_Piso,    _Digits));
       PE_Force("CFG_E_TRIGGER", DoubleToString(p_Trigger, _Digits));
-      PE_Force("CFG_E_G",       DoubleToString(p_G, 4));
+      PE_Force("CFG_E_G",       IntegerToString(p_G_Pips));   // pips enteros
       PE_Force("CFG_E_VOL",     DoubleToString(p_Vol, 2));
       PE_Force("CFG_E_CAP",     DoubleToString(p_Capital, 2));
       PE_Force("CFG_E_RISK",    DoubleToString(p_Risk, 2));
@@ -1340,26 +1572,43 @@ void CalcularRejillas()
 {
    ArrayResize(GridLevels, 0);
    const int MAX_NIVELES = 500;
+
+   // Valor del paso en precio: pips enteros → puntos del broker
+   double paso = PipsAPrecio(p_G_Pips);
+   if(paso <= 0) { Print("ERROR: paso de rejilla = 0"); return; }
+
+   // Pre-contar cuántos niveles caben en el rango operativo
    int count = 0;
-   double nivel = p_Trigger;
-
    if(p_Direccion == GRID_LONG)
-      while(nivel >= p_Piso && count < MAX_NIVELES)  { count++; nivel /= (1.0 + p_G); }
+   {
+      // LONG: desde Trigger bajando hasta Piso, sumando el paso
+      double nivel = p_Trigger;
+      while(nivel >= p_Piso && count < MAX_NIVELES) { count++; nivel -= paso; }
+   }
    else
-      while(nivel <= p_Techo && count < MAX_NIVELES) { count++; nivel *= (1.0 + p_G); }
+   {
+      // SHORT: desde Trigger subiendo hasta Techo, sumando el paso
+      double nivel = p_Trigger;
+      while(nivel <= p_Techo && count < MAX_NIVELES) { count++; nivel += paso; }
+   }
 
+   if(count == 0) { Print("WARN: ningún nivel en el rango con el paso configurado"); return; }
    if(count == MAX_NIVELES)
-      PrintFormat("ADVERTENCIA: Grid limitado a %d niveles. Considera aumentar G%% o reducir el rango.", MAX_NIVELES);
+      PrintFormat("ADVERTENCIA: Grid limitado a %d niveles. Aumenta el paso o reduce el rango.", MAX_NIVELES);
 
-   ArrayResize(GridLevels, count);
+   ArrayResize(GridLevels, count);   // una sola reserva de memoria
 
-   nivel = p_Trigger;
-   if(p_Direccion == GRID_LONG)
-      for(int i = 0; i < count; i++) { GridLevels[i] = NormalizeDouble(nivel, _Digits); nivel /= (1.0 + p_G); }
-   else
-      for(int i = 0; i < count; i++) { GridLevels[i] = NormalizeDouble(nivel, _Digits); nivel *= (1.0 + p_G); }
+   // Llenar niveles con espaciado lineal fijo
+   for(int i = 0; i < count; i++)
+   {
+      if(p_Direccion == GRID_LONG)
+         GridLevels[i] = NormalizeDouble(p_Trigger - i * paso, _Digits);
+      else
+         GridLevels[i] = NormalizeDouble(p_Trigger + i * paso, _Digits);
+   }
 
-   PrintFormat("Rejillas calculadas (%s): %d niveles", p_Direccion == GRID_LONG ? "LONG" : "SHORT", count);
+   PrintFormat("Rejillas (%s): %d niveles · paso=%d pips (%.5f precio)",
+               p_Direccion == GRID_LONG ? "LONG" : "SHORT", count, p_G_Pips, paso);
 }
 
 bool ValidarInputs()
@@ -1367,8 +1616,8 @@ bool ValidarInputs()
    if(Magic_Number == 0)                          { Print("ERROR: Magic=0");            return false; }
    if(p_Piso <= 0)                                { Print("ERROR: Piso debe ser > 0");  return false; }
    if(p_Piso >= p_Techo)                          { Print("ERROR: Piso >= Techo");       return false; }
-   if(p_G <= 0)                                   { Print("ERROR: G% <= 0");                    return false; }
-   if(p_G > 0.20)                                 { Print("ERROR: G% > 20% — paso irrazonable"); return false; }
+   if(p_G_Pips <= 0)   { Print("ERROR: Paso (pips) debe ser > 0");    return false; }
+   if(p_G_Pips > 5000) { Print("ERROR: Paso > 5000 pips — irrazonable"); return false; }
    if(p_MaxOrd <= 0)                              { Print("ERROR: MaxOrdenes <= 0");     return false; }
    if(p_Trigger < p_Piso || p_Trigger > p_Techo) { Print("ERROR: Trigger fuera rango"); return false; }
    if(p_Capital <= 0)                             { Print("ERROR: Capital <= 0");        return false; }
@@ -1448,6 +1697,13 @@ int EscanearOrdenesExistentes() { return ContarOrdenesPendientes() + ContarPosic
 
 void ActivarGrid()
 {
+   // Guard: sin rejillas calculadas no se puede activar
+   if(ArraySize(GridLevels) == 0)
+   {
+      Print("ERROR ActivarGrid: GridLevels vacío — verifica rango y paso de pips");
+      return;
+   }
+
    trade.SetExpertMagicNumber(Magic_Number);
    trade.SetTypeFillingBySymbol(_Symbol);
    long stops = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
@@ -1499,11 +1755,30 @@ void ActivarGrid()
 
 void CerrarTodo()
 {
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   if(EsCuentaNetting)
    {
-      ulong t = PositionGetTicket(i); if(t == 0) continue;
-      if(PositionGetInteger(POSITION_MAGIC) != Magic_Number || PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      if(!trade.PositionClose(t)) PrintFormat("FALLO cerrar %I64u rc=%u", t, trade.ResultRetcode());
+      // Netting: solo existe UNA posición por símbolo — buscarla y cerrarla
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+      {
+         ulong t = PositionGetTicket(i); if(t == 0) continue;
+         if(PositionGetInteger(POSITION_MAGIC) != Magic_Number) continue;
+         if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         if(!trade.PositionClose(t))
+            PrintFormat("FALLO cerrar posición Netting %I64u rc=%u", t, trade.ResultRetcode());
+         break; // solo 1 posición en Netting
+      }
+   }
+   else
+   {
+      // Hedging: pueden existir múltiples posiciones independientes
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+      {
+         ulong t = PositionGetTicket(i); if(t == 0) continue;
+         if(PositionGetInteger(POSITION_MAGIC) != Magic_Number) continue;
+         if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         if(!trade.PositionClose(t))
+            PrintFormat("FALLO cerrar %I64u rc=%u", t, trade.ResultRetcode());
+      }
    }
 }
 
@@ -1522,14 +1797,18 @@ bool CheckKillSwitch()
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    bool hTP = (p_Direccion == GRID_LONG) ? (bid >= p_TP) : (bid <= p_TP);
    bool hSL = (p_Direccion == GRID_LONG) ? (bid <= p_SL) : (bid >= p_SL);
-   if(hTP || hSL)
-   {
-      PrintFormat("KILL SWITCH: %s", hTP ? "TP" : "SL");
-      CancelarPendientes(); CerrarTodo();
-      estado = hTP ? PENDING : STOPPED; RejillasActivas = 0;
-      DibujarLineasGrid(); DibujarPanel(); return true;
-   }
-   return false;
+   if(!(hTP || hSL)) return false;
+
+   PrintFormat("KILL SWITCH: %s | precio=%.5f", hTP ? "TP" : "SL", bid);
+   CancelarPendientes();
+   CerrarTodo();   // Netting y Hedging: CerrarTodo ya maneja ambos casos internamente
+
+   estado = hTP ? PENDING : STOPPED;
+   RejillasActivas = 0;
+   GananciaBroker  = 0.0;
+   VolumenPosicion = 0.0;
+   DibujarLineasGrid(); DibujarPanel();
+   return true;
 }
 
 void CheckTrigger()
@@ -1541,12 +1820,478 @@ void CheckTrigger()
    ActivarGrid(); estado = ACTIVE;
 }
 
+//+------------------------------------------------------------------+
+//| FILTRO DE NOTICIAS — MT5 Economic Calendar API                   |
+//+------------------------------------------------------------------+
+
+// Verifica si una moneda pertenece a los países configurados ("USD,EUR")
+bool EsCurrencyRelevante(const string currency)
+{
+   string parts[];
+   int n = StringSplit(News_Countries, ',', parts);
+   for(int i = 0; i < n; i++)
+   {
+      string p = parts[i];
+      StringTrimLeft(p); StringTrimRight(p);
+      if(p == currency) return true;
+   }
+   return false;
+}
+
+// Lista curada de eventos que REALMENTE mueven los mercados Forex
+// MT5 marca muchos eventos como "HIGH" pero solo estos tienen impacto real en precio
+bool EsEventoCritico(const string nombre)
+{
+   if(!News_OnlyCritical) return true;   // sin filtro adicional — acepta todo HIGH/MED
+
+   // Convertir a mayúsculas para comparación case-insensitive
+   string nom = nombre;
+   StringToUpper(nom);
+
+   // ── Bancos centrales & tipos de interés ────────────────────
+   if(StringFind(nom, "RATE DECISION")    >= 0) return true;
+   if(StringFind(nom, "INTEREST RATE")    >= 0) return true;
+   if(StringFind(nom, "MONETARY POLICY")  >= 0) return true;
+   if(StringFind(nom, "FOMC")             >= 0) return true;
+   if(StringFind(nom, "ECB PRESS")        >= 0) return true;
+   if(StringFind(nom, "PRESS CONFERENCE") >= 0) return true;
+
+   // ── Discursos de presidentes de bancos centrales ───────────
+   if(StringFind(nom, "POWELL")           >= 0) return true;
+   if(StringFind(nom, "LAGARDE")          >= 0) return true;
+   if(StringFind(nom, "FED CHAIR")        >= 0) return true;
+   if(StringFind(nom, "WALLER")           >= 0) return true;
+   if(StringFind(nom, "WILLIAMS")         >= 0) return true;
+
+   // ── Empleo (mayores movimientos en Forex) ──────────────────
+   if(StringFind(nom, "NON-FARM")         >= 0) return true;
+   if(StringFind(nom, "NONFARM")          >= 0) return true;
+   if(StringFind(nom, "UNEMPLOYMENT RATE") >= 0) return true;
+   if(StringFind(nom, "EMPLOYMENT CHANGE") >= 0) return true;
+   if(StringFind(nom, "PAYROLL")          >= 0) return true;
+   if(StringFind(nom, "JOLTS")            >= 0) return true;
+
+   // ── Inflación ───────────────────────────────────────────────
+   if(StringFind(nom, "CPI")              >= 0) return true;
+   if(StringFind(nom, "CONSUMER PRICE")   >= 0) return true;
+   if(StringFind(nom, "CORE PCE")         >= 0) return true;
+   if(StringFind(nom, "PCE PRICE")        >= 0) return true;
+   if(StringFind(nom, "PPI")              >= 0) return true;
+   if(StringFind(nom, "PRODUCER PRICE")   >= 0) return true;
+   if(StringFind(nom, "HICP")             >= 0) return true;
+
+   // ── PIB ─────────────────────────────────────────────────────
+   if(StringFind(nom, "GDP")              >= 0) return true;
+   if(StringFind(nom, "GROSS DOMESTIC")   >= 0) return true;
+
+   // ── PMI flash (el mensual mueve, las revisiones no tanto) ───
+   if(StringFind(nom, "FLASH PMI")        >= 0) return true;
+   if(StringFind(nom, "MANUFACTURING PMI") >= 0) return true;
+   if(StringFind(nom, "SERVICES PMI")     >= 0) return true;
+   if(StringFind(nom, "COMPOSITE PMI")    >= 0) return true;
+
+   // ── Ventas minoristas ───────────────────────────────────────
+   if(StringFind(nom, "RETAIL SALES")     >= 0) return true;
+
+   // ── Otros con alto impacto histórico ───────────────────────
+   if(StringFind(nom, "ISM MANUFACTURING") >= 0) return true;
+   if(StringFind(nom, "ISM SERVICES")     >= 0) return true;
+   if(StringFind(nom, "TRADE BALANCE")    >= 0) return true;
+
+   return false;   // HIGH pero no crítico (ej: Building Permits, Factory Orders...)
+}
+
+// Busca si hay un evento relevante en la ventana [ahora-After, ahora+Before]
+// Devuelve true y rellena nombre/hora del primer evento encontrado
+bool VerificarNoticiaActiva(string &nombre, datetime &hora)
+{
+   if(!NewsFilter_Active) return false;
+
+   datetime ahora = TimeCurrent();
+   datetime desde = ahora - (datetime)(News_MinAfter  * 60);
+   datetime hasta = ahora + (datetime)(News_MinBefore * 60);
+
+   MqlCalendarValue valores[];
+   if(CalendarValueHistory(valores, desde, hasta) < 0) return false;
+
+   for(int i = 0; i < ArraySize(valores); i++)
+   {
+      MqlCalendarEvent evento;
+      if(!CalendarEventById(valores[i].event_id, evento)) continue;
+
+      MqlCalendarCountry pais;
+      if(!CalendarCountryById(evento.country_id, pais)) continue;
+
+      // Filtro por importancia
+      bool filtrar = false;
+      if(News_HighImpact && evento.importance == CALENDAR_IMPORTANCE_HIGH)     filtrar = true;
+      if(News_MedImpact  && evento.importance == CALENDAR_IMPORTANCE_MODERATE) filtrar = true;
+      if(!filtrar) continue;
+
+      // Filtro por moneda del país
+      if(!EsCurrencyRelevante(pais.currency)) continue;
+
+      // Filtro crítico: solo eventos con impacto real probado en precio
+      if(!EsEventoCritico(evento.name)) continue;
+
+      nombre = evento.name + " (" + pais.currency + ")";
+      hora   = valores[i].time;
+      return true;
+   }
+   return false;
+}
+
+// Busca el próximo evento relevante en las próximas 24h para el panel
+void BuscarProximaNoticia()
+{
+   if(!NewsFilter_Active)
+   {
+      ProximaNoticiaTime = 0; ProximaNoticiaNom = "";
+      NewsCache_Count = 0;
+      return;
+   }
+
+   datetime ahora = TimeCurrent();
+   datetime hasta = ahora + 24 * 3600;
+
+   MqlCalendarValue valores[];
+   if(CalendarValueHistory(valores, ahora, hasta) < 0) return;
+
+   ProximaNoticiaTime = 0;
+   ProximaNoticiaNom  = "";
+   NewsCache_Count    = 0;
+
+   for(int i = 0; i < ArraySize(valores) && NewsCache_Count < MAX_NEWS_CACHE; i++)
+   {
+      if(valores[i].time <= ahora) continue;
+
+      MqlCalendarEvent evento;
+      if(!CalendarEventById(valores[i].event_id, evento)) continue;
+
+      MqlCalendarCountry pais;
+      if(!CalendarCountryById(evento.country_id, pais)) continue;
+
+      bool filtrar = false;
+      bool isHigh  = (evento.importance == CALENDAR_IMPORTANCE_HIGH);
+      bool isMed   = (evento.importance == CALENDAR_IMPORTANCE_MODERATE);
+      if(News_HighImpact && isHigh) filtrar = true;
+      if(News_MedImpact  && isMed)  filtrar = true;
+      if(!filtrar) continue;
+      if(!EsCurrencyRelevante(pais.currency)) continue;
+      if(!EsEventoCritico(evento.name)) continue;   // filtro crítico
+
+      // Primer evento = próxima noticia del panel principal
+      if(NewsCache_Count == 0)
+      {
+         ProximaNoticiaTime = valores[i].time;
+         ProximaNoticiaNom  = evento.name + " · " + pais.currency;
+      }
+      // Caché completo para el panel de noticias
+      NewsCache_Times     [NewsCache_Count] = valores[i].time;
+      NewsCache_Names     [NewsCache_Count] = evento.name;
+      NewsCache_Currencies[NewsCache_Count] = pais.currency;
+      NewsCache_IsHigh    [NewsCache_Count] = isHigh;
+      NewsCache_Count++;
+   }
+}
+
+// Motor principal del filtro — llamado desde OnTimer (cada 200 ms con caché de 60s)
+void CheckNewsFilter()
+{
+   if(!NewsFilter_Active) return;
+
+   datetime ahora = TimeCurrent();
+
+   // Caché adaptativa:
+   // · Si no hay pausa activa: revisar cada 60s
+   // · Si está pausado por noticias: revisar cada 20s para detectar el fin de ventana rápido
+   int cadencia = PausadoPorNoticias ? 20 : 60;
+   if(ahora - UltimaRevisionNot < cadencia) return;
+   UltimaRevisionNot = ahora;
+
+   string nombreEvento = "";
+   datetime horaEvento = 0;
+   bool hayNoticia = VerificarNoticiaActiva(nombreEvento, horaEvento);
+
+   // ── Activar pausa por noticias ──────────────────────────────────
+   if(hayNoticia && !PausadoPorNoticias && (estado == ACTIVE || estado == PENDING))
+   {
+      PausadoPorNoticias = true;
+      NoticiaActual = nombreEvento;
+      NoticiaHora   = horaEvento;
+      estado = PAUSED;
+      PrintFormat("⏸ PAUSA NOTICIAS: %s @ %s (ventana -%dmin/+%dmin)",
+                  nombreEvento, TimeToString(horaEvento, TIME_DATE|TIME_MINUTES),
+                  News_MinBefore, News_MinAfter);
+      DibujarPanel(); DibujarPanelNoticias();
+   }
+   // ── Reanudar automáticamente al terminar la ventana ────────────
+   else if(!hayNoticia && PausadoPorNoticias)
+   {
+      PausadoPorNoticias = false;
+      NoticiaActual = "";
+      NoticiaHora   = 0;
+
+      // Verificar rango ANTES de reanudar: el precio pudo haber salido durante la pausa
+      double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      bool   fuera = (bid > p_Techo || bid < p_Piso);
+      if(!fuera)
+      {
+         estado = ACTIVE;
+         PrintFormat("REANUDADO tras noticias — en rango, ACTIVE");
+      }
+      else
+      {
+         // Precio fuera del rango operativo: queda en PAUSED por rango, no por noticias
+         estado = PAUSED;
+         PrintFormat("REANUDADO tras noticias — precio fuera de rango, PAUSED");
+      }
+      DibujarPanel(); DibujarBotonesEsquina(); DibujarPanelNoticias();
+   }
+
+   // BuscarProximaNoticia tiene su propio caché de 5 min — cambia lentamente
+   if(ahora - UltimaRevisionProxima >= 300)
+   {
+      UltimaRevisionProxima = ahora;
+      BuscarProximaNoticia();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| PANEL DE NOTICIAS INDEPENDIENTE                                   |
+//+------------------------------------------------------------------+
+void BorrarPanelNoticias()
+{
+   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+   {
+      string n = ObjectName(0, i);
+      if(StringFind(n, PFX + "NW_") == 0) ObjectDelete(0, n);
+   }
+}
+
+// Helper local exclusivo del panel noticias (usa prefijo NW_)
+void NW_PR(string id, int x, int y, int w, int h, color bg, color brd, int bw=1)
+{
+   string n = PFX + "NW_R_" + id;
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_RECTANGLE_LABEL,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x); ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);    ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg); ObjectSetInteger(0,n,OBJPROP_BORDER_TYPE,BORDER_FLAT);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,brd);  ObjectSetInteger(0,n,OBJPROP_WIDTH,bw);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false); ObjectSetInteger(0,n,OBJPROP_BACK,false);
+}
+void NW_PL(string id, int x, int y, string txt, color clr, int sz, string font="Arial")
+{
+   string n = PFX + "NW_L_" + id;
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_LABEL,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x); ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetString(0,n,OBJPROP_TEXT,txt); ObjectSetInteger(0,n,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,sz); ObjectSetString(0,n,OBJPROP_FONT,font);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false); ObjectSetInteger(0,n,OBJPROP_BACK,false);
+}
+void NW_PB(string id, int x, int y, int w, int h, string txt, color bg, color clr, int sz=9)
+{
+   string n = PFX + "NW_B_" + id;
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_BUTTON,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x); ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);    ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetString(0,n,OBJPROP_TEXT,txt);    ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,clr);  ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,bg);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,sz); ObjectSetString(0,n,OBJPROP_FONT,"Arial");
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false); ObjectSetInteger(0,n,OBJPROP_STATE,false);
+}
+void NW_PHR(string id, int x, int y, int w, color clr)
+{
+   NW_PR(id+"_hr", x, y, w, 1, clr, clr, 0);
+}
+
+void DibujarPanelNoticias()
+{
+   BorrarPanelNoticias();
+   if(!NewsVisible || !NewsFilter_Active) return;
+   RefreshScale();
+
+   int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   int W   = Sc(300);   // más ancho para que quepan todos los campos sin solapar
+   int HDR = Sc(32);
+   int PAD = Sc(12);
+   int sz8 = Sc(8); int sz9 = Sc(9);
+   int LH  = Sc(26);   // altura por fila de evento
+
+   // Posición inicial: esquina superior derecha
+   if(NewsPosX < 0 || NewsPosY < 0)
+   {
+      NewsPosX = cw - W - Sc(14);
+      NewsPosY = Sc(50);
+   }
+   NewsPosX = MathMax(0, MathMin(NewsPosX, cw - W));
+   NewsPosY = MathMax(0, MathMin(NewsPosY, ch - HDR));
+   int x = NewsPosX, y = NewsPosY;
+
+   // Altura total dinámica
+   int bodyH = 0;
+   if(!NewsMinimized)
+   {
+      bodyH += Sc(32);                                    // fila estado
+      bodyH += Sc(22);                                    // fila explicación
+      if(PausadoPorNoticias) bodyH += Sc(50);             // banner activo
+      bodyH += Sc(22);                                    // subheader eventos
+      bodyH += MathMax(NewsCache_Count, 1) * LH;          // filas
+      bodyH += Sc(10);                                    // padding bottom
+   }
+   int totalH = HDR + bodyH;
+
+   // ── Fondo ──────────────────────────────────────────────────
+   NW_PR("BG",  x, y, W, totalH, CLR_PANEL,   CLR_BORDER_LT, 1);
+   NW_PR("HDR", x, y, W, HDR,    CLR_BG_DEEP, CLR_BG_DEEP,   0);
+   if(!NewsMinimized) NW_PR("HDR_LN", x, y+HDR-1, W, 1, CLR_BORDER, CLR_BORDER, 0);
+
+   // ── Header ─────────────────────────────────────────────────
+   NW_PB("LOGO", x+PAD, y+(HDR-Sc(20))/2, Sc(20), Sc(20), "N", CLR_AMBER_DIM, CLR_AMBER, Sc(10));
+   ObjectSetInteger(0, PFX+"NW_B_LOGO", OBJPROP_BORDER_COLOR, CLR_AMBER_DIM);
+   NW_PL("TIT", x+PAD+Sc(26), y+(HDR-Sc(12))/2, "NOTICIAS", CLR_TEXT, sz9);
+   int bsz = Sc(20); int gap4 = Sc(4);
+   NW_PB("MIN", x+W-PAD-bsz-gap4-bsz, y+(HDR-bsz)/2, bsz, bsz, NewsMinimized?"+":"−", CLR_ELEV,    CLR_TEXT_DIM, Sc(11));
+   ObjectSetInteger(0, PFX+"NW_B_MIN", OBJPROP_BORDER_COLOR, CLR_BORDER);
+   NW_PB("X",   x+W-PAD-bsz,            y+(HDR-bsz)/2, bsz, bsz, "x",                   CLR_RED_DIM, CLR_TEXT,     Sc(9));
+   ObjectSetInteger(0, PFX+"NW_B_X", OBJPROP_BORDER_COLOR, CLR_RED_DIM);
+
+   if(NewsMinimized) { ChartRedraw(0); return; }
+
+   int cy = y + HDR + Sc(8);
+
+   // ── Fila de estado ─────────────────────────────────────────
+   // Izquierda: configuración activa
+   string filtroTxt = News_Countries + " | " + (News_HighImpact ? "HIGH" : "") +
+                      ((News_HighImpact && News_MedImpact) ? "+MED" : (News_MedImpact ? "MED" : "")) +
+                      (News_OnlyCritical ? " | CRITICOS" : " | TODOS");
+   NW_PL("FILT", x+PAD, cy+Sc(4), filtroTxt, CLR_TEXT_FAINT, sz8);
+
+   // Derecha: estado del bot respecto a noticias
+   string stTxt; color stClr; color stBg; color stBrd;
+   if(PausadoPorNoticias)
+      { stTxt="PAUSADO-NEWS"; stClr=CLR_RED;   stBg=CLR_RED_DEEP;   stBrd=CLR_RED_DIM; }
+   else if(estado == ACTIVE || estado == PENDING)
+      { stTxt="VIGILANDO";   stClr=CLR_GREEN; stBg=CLR_GREEN_DEEP; stBrd=CLR_GREEN_DIM; }
+   else
+      { stTxt="BOT INACTIVO"; stClr=CLR_AMBER; stBg=CLR_AMBER_DEEP; stBrd=CLR_AMBER_DIM; }
+   int badgW = Sc(96); int badgH = Sc(20);
+   NW_PR("STBG",  x+W-PAD-badgW, cy,         badgW, badgH, stBg, stBrd, 1);
+   // Dot indicador
+   NW_PR("STDOT", x+W-PAD-badgW+Sc(7), cy+Sc(6), Sc(7), Sc(7), stClr, stClr, 0);
+   NW_PL("STTX",  x+W-PAD-badgW+Sc(18), cy+Sc(4), stTxt, stClr, sz8);
+   cy += Sc(26);
+
+   // ── Fila de explicación ─────────────────────────────────────
+   NW_PL("EXPL", x+PAD, cy+Sc(2),
+          "Pausa: " + IntegerToString(News_MinBefore) + "min antes  +  " +
+          IntegerToString(News_MinAfter) + "min despues de cada evento",
+          CLR_TEXT_FAINT, sz8);
+   cy += Sc(22);
+
+   // ── Banner evento activo ────────────────────────────────────
+   if(PausadoPorNoticias)
+   {
+      NW_PR("ACT_BG", x+PAD, cy, W-PAD*2, Sc(46), CLR_RED_DEEP, CLR_RED_DIM, 1);
+      // Barra lateral roja
+      NW_PR("ACT_BAR", x+PAD, cy, Sc(4), Sc(46), CLR_RED, CLR_RED, 0);
+      NW_PL("ACT_LB", x+PAD+Sc(10), cy+Sc(5),  "EVENTO ACTIVO",                  CLR_RED_DIM, sz8);
+      string nomEvt = StringLen(NoticiaActual) > 32
+                      ? StringSubstr(NoticiaActual, 0, 30) + "…"
+                      : NoticiaActual;
+      NW_PL("ACT_NM", x+PAD+Sc(10), cy+Sc(18), nomEvt, CLR_RED, sz9);
+      string horaFin = TimeToString(NoticiaHora + News_MinAfter*60, TIME_MINUTES);
+      NW_PL("ACT_HR", x+PAD+Sc(10), cy+Sc(34), "reanuda a las " + horaFin, CLR_RED_DIM, sz8);
+      cy += Sc(50) + Sc(6);
+   }
+
+   // ── Subheader eventos ───────────────────────────────────────
+   NW_PL("PROX_HD", x+PAD, cy+Sc(3), "PROXIMOS EVENTOS · 24h", CLR_TEXT_MUTE, sz8);
+   // Cabecera de columnas
+   NW_PL("COL_H", x+PAD+Sc(16),  cy+Sc(3), "HORA",   CLR_TEXT_MUTE, sz8);
+   NW_PL("COL_N", x+PAD+Sc(64),  cy+Sc(3), "EVENTO", CLR_TEXT_MUTE, sz8);
+   NW_PL("COL_C", x+W-PAD-Sc(44),cy+Sc(3), "CUR",    CLR_TEXT_MUTE, sz8);
+   NW_PL("COL_E", x+W-PAD-Sc(2), cy+Sc(3), "RESTA",  sz8==Sc(8)?Sc(8):sz8, CLR_TEXT_MUTE, sz8);
+   NW_PHR("PROX_LN", x+PAD, cy+Sc(16), W-PAD*2, CLR_BORDER_LT);
+   cy += Sc(22);
+
+   // ── Lista de eventos (layout en columnas fijas) ─────────────
+   if(NewsCache_Count == 0)
+   {
+      NW_PL("NO_EVT", x+PAD+Sc(16), cy+Sc(8), "Sin eventos filtrados en las proximas 24h", CLR_TEXT_FAINT, sz8);
+      cy += Sc(28);
+   }
+   else
+   {
+      /*  Columnas (referencia en px a escala 1.0):
+          [dot]  x+PAD+2      7px
+          [hora] x+PAD+16     44px  → HH:MM  Consolas sz9
+          [nom]  x+PAD+64    ~140px → nombre truncado
+          [cur]  x+W-PAD-44   26px  → 3 letras
+          [eta]  x+W-PAD-14   right-aligned
+      */
+      int dotX  = x + PAD + Sc(2);
+      int horaX = x + PAD + Sc(16);
+      int nomX  = x + PAD + Sc(64);
+      int curX  = x + W - PAD - Sc(42);
+      int etaX  = x + W - PAD - Sc(2);
+
+      for(int i = 0; i < NewsCache_Count; i++)
+      {
+         int ey = cy + i * LH;
+         // Fondo alterno suave
+         if(i % 2 == 0)
+            NW_PR("EV_BG_"+IntegerToString(i), x+PAD, ey, W-PAD*2, LH-1, CLR_BG_DEEP, CLR_BG_DEEP, 0);
+
+         // Dot de importancia
+         color dotC = NewsCache_IsHigh[i] ? CLR_RED : CLR_AMBER;
+         NW_PR("EV_DOT_"+IntegerToString(i), dotX, ey+LH/2-Sc(3), Sc(7), Sc(7), dotC, dotC, 0);
+
+         // Hora (HH:MM)
+         NW_PL("EV_HR_"+IntegerToString(i),  horaX, ey+Sc(5),
+               TimeToString(NewsCache_Times[i], TIME_MINUTES), CLR_TEXT, sz9, "Consolas");
+
+         // Nombre del evento — espacio disponible hasta curX-8
+         int nomMax = (int)MathRound((curX - nomX - Sc(8)) / (sz8 * 0.75));
+         if(nomMax < 4)  nomMax = 4;
+         if(nomMax > 24) nomMax = 24;
+         string nom = StringLen(NewsCache_Names[i]) > nomMax
+                      ? StringSubstr(NewsCache_Names[i], 0, nomMax-1) + "."
+                      : NewsCache_Names[i];
+         NW_PL("EV_NM_"+IntegerToString(i),  nomX,  ey+Sc(5), nom, CLR_TEXT, sz8);
+
+         // Moneda
+         NW_PL("EV_CUR_"+IntegerToString(i), curX,  ey+Sc(5), NewsCache_Currencies[i], dotC, sz8);
+
+         // Tiempo restante (alineado a la derecha)
+         int minR = (int)((NewsCache_Times[i] - TimeCurrent()) / 60);
+         if(minR < 0) minR = 0;
+         string eta = (minR < 60)
+            ? IntegerToString(minR) + "m"
+            : IntegerToString(minR/60) + "h" + IntegerToString(minR % 60) + "m";
+         // PL no tiene anchor_right, aproximamos con posición fija derecha
+         NW_PL("EV_ETA_"+IntegerToString(i), etaX - Sc(StringLen(eta)*6), ey+Sc(14), eta, CLR_TEXT_FAINT, sz8);
+      }
+      cy += NewsCache_Count * LH;
+   }
+
+   cy += Sc(10);
+   ChartRedraw(0);
+}
+
 void CheckRange()
 {
    double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    bool   fuera = (bid > p_Techo || bid < p_Piso);
-   if     (estado == ACTIVE && fuera)  { estado = PAUSED; Print("PAUSED"); }
-   else if(estado == PAUSED && !fuera) { estado = ACTIVE;  Print("ACTIVE"); }
+   if(estado == ACTIVE && fuera)
+      { estado = PAUSED; Print("PAUSED por rango"); }
+   else if(estado == PAUSED && !fuera && !PausadoPorNoticias)
+      { estado = ACTIVE;  Print("ACTIVE por rango"); }
+   // Si PausadoPorNoticias=true la noticia tiene prioridad — CheckNewsFilter reanuda cuando corresponde
 }
 
 void LogOperacion(string tipo, double salida, double lotes, double ganancia)
@@ -1570,22 +2315,32 @@ void ColocarContraparte(int idx, ENUM_DEAL_TYPE dt, double pe)
    trade.SetExpertMagicNumber(Magic_Number);
 
    bool ok = false;
+   double paso = PipsAPrecio(p_G_Pips);
    if(dt == DEAL_TYPE_BUY)
    {
-      double obj = NormalizeDouble(pe * (1.0 + p_G), _Digits);
+      // LONG: la contraparte (TP) está un paso POR ENCIMA del precio de entrada
+      double obj = NormalizeDouble(pe + paso, _Digits);
       if(OrdenExisteEnNivel(obj)) { Print("Contraparte ya existe en ", DoubleToString(obj, _Digits)); return; }
       ok = trade.SellLimit(p_Vol, obj, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GRID_TP_" + IntegerToString(idx));
       if(!ok) PrintFormat("FALLO TP-sell idx=%d obj=%.5f rc=%u", idx, obj, trade.ResultRetcode());
    }
    else if(dt == DEAL_TYPE_SELL)
    {
-      double obj = NormalizeDouble(pe / (1.0 + p_G), _Digits);
+      // SHORT: la contraparte (TP) está un paso POR DEBAJO del precio de entrada
+      double obj = NormalizeDouble(pe - paso, _Digits);
       if(OrdenExisteEnNivel(obj)) { Print("Contraparte ya existe en ", DoubleToString(obj, _Digits)); return; }
       ok = trade.BuyLimit(p_Vol, obj, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GRID_TP_" + IntegerToString(idx));
       if(!ok) PrintFormat("FALLO TP-buy idx=%d obj=%.5f rc=%u", idx, obj, trade.ResultRetcode());
    }
 
-   if(ok) { MarcarRejillaActiva(idx, true); RejillasActivas++; }
+   if(ok)
+   {
+      MarcarRejillaActiva(idx, true);
+      RejillasActivas++;
+      // Netting: actualizar SL de la posición única cada vez que se agrega una rejilla
+      // Esto mantiene el SL global real sincronizado con la posición promediada del broker
+      ActualizarSL_Netting();
+   }
 }
 
 void ReponerEntrada(int idx)
@@ -1660,38 +2415,78 @@ void OnChartEvent(const int id, const long& lparam, const double& dparam, const 
       if(cw != LastChartW || ch != LastChartH)
       {
          LastChartW = cw; LastChartH = ch;
-         DibujarPanel(); if(ConfigVisible) DibujarConfigDialog(); if(AlertaVisible) DibujarAlerta();
+         DibujarPanel(); if(ConfigVisible) DibujarConfigDialog(); if(AlertaVisible) DibujarAlerta(); DibujarPanelNoticias();
       }
       return;
    }
    if(id == CHARTEVENT_MOUSE_MOVE)
    {
       int mx = (int)lparam; int my = (int)dparam; bool md = ((int)StringToInteger(sparam) & 1) != 0;
-      int pW = Sc(256); int pHDR = Sc(36); int cHDR_h = CFG_HDR_H;
-      if(md && !DragPanel && !DragConfig && mx >= PanelPosX && mx <= PanelPosX+pW && my >= PanelPosY && my <= PanelPosY+pHDR)
-         { DragPanel = true; DragOffX = mx - PanelPosX; DragOffY = my - PanelPosY; ChartSetInteger(0, CHART_MOUSE_SCROLL, false); }
-      if(md && !DragConfig && !DragPanel && ConfigVisible && !ConfigMinimized &&
-         mx >= ConfigPosX && mx <= ConfigPosX+CfgW && my >= ConfigPosY && my <= ConfigPosY+cHDR_h)
-         { DragConfig = true; DragOffX = mx - ConfigPosX; DragOffY = my - ConfigPosY; ChartSetInteger(0, CHART_MOUSE_SCROLL, false); }
+      int pW   = Sc(256); int pHDR  = Sc(36);
+      int nHDR = Sc(32);
+      int cHDR_h = CFG_HDR_H;
+      int cw = (int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS);
+      int ch = (int)ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS);
+
+      // ── Iniciar drag ────────────────────────────────────────
+      if(md && !DragPanel && !DragConfig && !DragNews)
+      {
+         if(mx >= PanelPosX && mx <= PanelPosX+pW && my >= PanelPosY && my <= PanelPosY+pHDR)
+            { DragPanel = true; DragOffX = mx-PanelPosX; DragOffY = my-PanelPosY; ChartSetInteger(0,CHART_MOUSE_SCROLL,false); }
+         else if(ConfigVisible && mx >= ConfigPosX && my >= ConfigPosY &&
+                 mx <= ConfigPosX + (ConfigMinimized ? Sc(260) : CfgW) &&
+                 my <= ConfigPosY + (ConfigMinimized ? Sc(40)  : cHDR_h))
+            { DragConfig = true; DragOffX = mx-ConfigPosX; DragOffY = my-ConfigPosY; ChartSetInteger(0,CHART_MOUSE_SCROLL,false); }
+         else if(NewsVisible && NewsFilter_Active && NewsPosX >= 0 && mx >= NewsPosX && mx <= NewsPosX+Sc(300) && my >= NewsPosY && my <= NewsPosY+nHDR)
+            { DragNews = true; DragOffX = mx-NewsPosX; DragOffY = my-NewsPosY; ChartSetInteger(0,CHART_MOUSE_SCROLL,false); }
+      }
+
+      // ── Durante drag: desplazar objetos por delta (SIN borrar/recrear = sin parpadeo) ──
       if(md && DragPanel)
       {
-         PanelPosX = MathMax(0, MathMin(mx - DragOffX, (int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS)  - pW));
-         PanelPosY = MathMax(0, MathMin(my - DragOffY, (int)ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS) - pHDR));
-         DibujarPanel();
+         int newX = MathMax(0, MathMin(mx-DragOffX, cw-pW));
+         int newY = MathMax(0, MathMin(my-DragOffY, ch-pHDR));
+         MoverPanelPrincipal(newX - PanelPosX, newY - PanelPosY);
+         PanelPosX = newX; PanelPosY = newY;
       }
       else if(md && DragConfig)
       {
-         ConfigPosX = MathMax(0, MathMin(mx - DragOffX, (int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS)  - CfgW));
-         ConfigPosY = MathMax(0, MathMin(my - DragOffY, (int)ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS) - CfgH));
-         DibujarConfigDialog();
+         int maxW = ConfigMinimized ? Sc(260) : CfgW;
+         int maxH = ConfigMinimized ? Sc(40)  : CfgH;
+         int newX = MathMax(0, MathMin(mx-DragOffX, cw-maxW));
+         int newY = MathMax(0, MathMin(my-DragOffY, ch-maxH));
+         MoverConfigDialog(newX - ConfigPosX, newY - ConfigPosY);
+         ConfigPosX = newX; ConfigPosY = newY;
       }
-      if(!md && (DragPanel || DragConfig)) { DragPanel = false; DragConfig = false; ChartSetInteger(0, CHART_MOUSE_SCROLL, true); }
+      else if(md && DragNews)
+      {
+         int newX = MathMax(0, MathMin(mx-DragOffX, cw-Sc(300)));
+         int newY = MathMax(0, MathMin(my-DragOffY, ch-nHDR));
+         MoverPanelNoticias(newX - NewsPosX, newY - NewsPosY);
+         NewsPosX = newX; NewsPosY = newY;
+      }
+
+      // ── Al soltar: redibuja completo en la posición final ──
+      if(!md && (DragPanel || DragConfig || DragNews))
+      {
+         bool wasPanel = DragPanel, wasCfg = DragConfig, wasNews = DragNews;
+         DragPanel = false; DragConfig = false; DragNews = false;
+         ChartSetInteger(0, CHART_MOUSE_SCROLL, true);
+         if(wasPanel) DibujarPanel();
+         if(wasCfg)   DibujarConfigDialog();
+         if(wasNews)   DibujarPanelNoticias();
+      }
       return;
    }
    if(id != CHARTEVENT_OBJECT_CLICK) return;
 
    if(sparam == PFX + "B_MINBTN")   { ObjectSetInteger(0,sparam,OBJPROP_STATE,false); PanelMinimized = !PanelMinimized; DibujarPanel(); return; }
    if(sparam == PFX + "B_CFGBTN")   { ObjectSetInteger(0,sparam,OBJPROP_STATE,false); ConfigVisible = !ConfigVisible; ConfigMinimized=false; if(!ConfigVisible) BorrarConfigDialog(); else DibujarConfigDialog(); return; }
+   // Botón NEWS: toggle del panel de noticias
+   if(sparam == PFX + "B_NEWSBTN")  { ObjectSetInteger(0,sparam,OBJPROP_STATE,false); NewsVisible = !NewsVisible; DibujarPanelNoticias(); DibujarBotonesEsquina(); ChartRedraw(0); return; }
+   // Botones internos del panel de noticias
+   if(sparam == PFX + "NW_B_MIN")   { ObjectSetInteger(0,sparam,OBJPROP_STATE,false); NewsMinimized = !NewsMinimized; DibujarPanelNoticias(); return; }
+   if(sparam == PFX + "NW_B_X")     { ObjectSetInteger(0,sparam,OBJPROP_STATE,false); NewsVisible = false; BorrarPanelNoticias(); DibujarBotonesEsquina(); ChartRedraw(0); return; }
    if(sparam == PFX + "B_CFG_X")    { ObjectSetInteger(0,sparam,OBJPROP_STATE,false); ConfigVisible=false; ConfigMinimized=false; BorrarConfigDialog(); return; }
    if(sparam == PFX + "B_CFG_MIN")  { ObjectSetInteger(0,sparam,OBJPROP_STATE,false); ConfigMinimized=!ConfigMinimized; BorrarConfigDialog(); DibujarConfigDialog(); return; }
    if(sparam == PFX + "B_CFG_CANCEL") { ObjectSetInteger(0,sparam,OBJPROP_STATE,false); ConfigVisible=false; BorrarConfigDialog(); return; }
@@ -1735,7 +2530,23 @@ void OnChartEvent(const int id, const long& lparam, const double& dparam, const 
       }
       DibujarLineasGrid(); DibujarPanel(); return;
    }
-   if(sparam == PFX + "B_PAUSE") { ObjectSetInteger(0,sparam,OBJPROP_STATE,false); if(estado==ACTIVE) estado=PAUSED; else if(estado==PAUSED) estado=ACTIVE; DibujarPanel(); return; }
+   if(sparam == PFX + "B_PAUSE")
+   {
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      if(estado==ACTIVE)
+         { estado=PAUSED; }
+      else if(estado==PAUSED)
+      {
+         estado=ACTIVE;
+         if(PausadoPorNoticias)
+         {
+            PausadoPorNoticias = false;
+            Print("OVERRIDE manual: reanudado durante ventana de noticias (", NoticiaActual, ")");
+            NoticiaActual = "";
+         }
+      }
+      DibujarPanel(); return;
+   }
    if(sparam == PFX + "B_STOP")  { ObjectSetInteger(0,sparam,OBJPROP_STATE,false); CancelarPendientes(); CerrarTodo(); estado=STOPPED; RejillasActivas=0; DibujarLineasGrid(); DibujarPanel(); return; }
    if(sparam == PFX + "B_CANCEL"){ ObjectSetInteger(0,sparam,OBJPROP_STATE,false); CancelarPendientes(); estado=STOPPED; RejillasActivas=0; DibujarLineasGrid(); DibujarPanel(); MostrarAlerta("CANCELADO","Orden pendiente cancelada.","",ALERT_INFO); return; }
 }
@@ -1748,6 +2559,9 @@ bool  PendingRecalc = false;
 
 void OnTimer()
 {
+   // Filtro de noticias — corre siempre, independiente del config dialog (caché 60s/20s)
+   CheckNewsFilter();
+
    if(!ConfigVisible || ConfigMinimized) return;
    bool changed = false; string cur;
    if(ObjectFind(0, PFX + "E_CFG_E_TECHO") >= 0)
@@ -1755,7 +2569,7 @@ void OnTimer()
       cur=GetEdit("CFG_E_TECHO");   if(cur!=PrevTecho)   { PrevTecho=cur;   double v=StringToDouble(cur); if(v>0) p_Techo=v;   changed=true; }
       cur=GetEdit("CFG_E_PISO");    if(cur!=PrevPiso)    { PrevPiso=cur;    double v=StringToDouble(cur); if(v>0) p_Piso=v;    changed=true; }
       cur=GetEdit("CFG_E_TRIGGER"); if(cur!=PrevTrigger) { PrevTrigger=cur; double v=StringToDouble(cur); if(v>0) p_Trigger=v; changed=true; }
-      cur=GetEdit("CFG_E_G");       if(cur!=PrevG)       { PrevG=cur;       double v=StringToDouble(cur); if(v>0) p_G=v;       changed=true; }
+      cur=GetEdit("CFG_E_G");       if(cur!=PrevG) { PrevG=cur; int v=(int)StringToInteger(cur); if(v>0) p_G_Pips=v; changed=true; }
       cur=GetEdit("CFG_E_VOL");     if(cur!=PrevVol)     { PrevVol=cur;     double v=StringToDouble(cur); if(v>0) p_Vol=v;     changed=true; }
    }
    if(ObjectFind(0, PFX + "E_CFG_E_CAP") >= 0)
@@ -1806,7 +2620,7 @@ void RedibujarSoloVisualesBody()
 void ResetCacheEdits()
 {
    PrevTecho   = DoubleToString(p_Techo,   _Digits); PrevPiso    = DoubleToString(p_Piso,    _Digits);
-   PrevTrigger = DoubleToString(p_Trigger, _Digits); PrevG       = DoubleToString(p_G,       4);
+   PrevTrigger = DoubleToString(p_Trigger, _Digits); PrevG       = IntegerToString(p_G_Pips);
    PrevVol     = DoubleToString(p_Vol,     2);        PrevCap     = DoubleToString(p_Capital, 2);
    PrevRisk    = DoubleToString(p_Risk,    2);        PrevMaxo    = IntegerToString(p_MaxOrd);
    PrevTP      = DoubleToString(p_TP,      _Digits); PrevSL      = DoubleToString(p_SL,      _Digits);
@@ -1822,7 +2636,7 @@ void GuardarEstado()
    string p = GVarPrefix();
    GlobalVariableSet(p+"estado",        (double)estado);    GlobalVariableSet(p+"p_Direccion", (double)p_Direccion);
    GlobalVariableSet(p+"p_Techo",       p_Techo);           GlobalVariableSet(p+"p_Piso",      p_Piso);
-   GlobalVariableSet(p+"p_Trigger",     p_Trigger);         GlobalVariableSet(p+"p_G",         p_G);
+   GlobalVariableSet(p+"p_Trigger",     p_Trigger);         GlobalVariableSet(p+"p_G_Pips",    (double)p_G_Pips);
    GlobalVariableSet(p+"p_Capital",     p_Capital);         GlobalVariableSet(p+"p_Vol",       p_Vol);
    GlobalVariableSet(p+"p_Risk",        p_Risk);            GlobalVariableSet(p+"p_MaxOrd",    (double)p_MaxOrd);
    GlobalVariableSet(p+"p_Libre",       p_Libre?1.0:0.0);   GlobalVariableSet(p+"p_TP",        p_TP);
@@ -1839,7 +2653,7 @@ bool CargarEstado()
    estado          = (EstadoBot)(int)GlobalVariableGet(p+"estado");
    p_Direccion     = (DireccionGrid)(int)GlobalVariableGet(p+"p_Direccion");
    p_Techo         = GlobalVariableGet(p+"p_Techo");    p_Piso    = GlobalVariableGet(p+"p_Piso");
-   p_Trigger       = GlobalVariableGet(p+"p_Trigger");  p_G       = GlobalVariableGet(p+"p_G");
+   p_Trigger       = GlobalVariableGet(p+"p_Trigger");  p_G_Pips  = (int)GlobalVariableGet(p+"p_G_Pips");
    p_Capital       = GlobalVariableGet(p+"p_Capital");  p_Vol     = GlobalVariableGet(p+"p_Vol");
    p_Risk          = GlobalVariableGet(p+"p_Risk");     p_MaxOrd  = (int)GlobalVariableGet(p+"p_MaxOrd");
    p_Libre         = GlobalVariableGet(p+"p_Libre") > 0.5;
@@ -1854,7 +2668,7 @@ bool CargarEstado()
 void BorrarEstadoGuardado()
 {
    string p = GVarPrefix();
-   string keys[18] = {"estado","p_Direccion","p_Techo","p_Piso","p_Trigger","p_G","p_Capital",
+   string keys[18] = {"estado","p_Direccion","p_Techo","p_Piso","p_Trigger","p_G_Pips","p_Capital",
                        "p_Vol","p_Risk","p_MaxOrd","p_Libre","p_TP","p_SL","GananciaAcum",
                        "PanelMinimized","PanelPosX","PanelPosY","Saved"};
    for(int i = 0; i < 18; i++) GlobalVariableDel(p + keys[i]);
@@ -1866,17 +2680,23 @@ void BorrarEstadoGuardado()
 int OnInit()
 {
    Print("==============================================");
-   Print("GridBot v3.6.0 | UI redisenada | ", _Symbol);
+   Print("GridBot v3.8.0 | Pips lineales | Netting compatible | ", _Symbol);
    Print("==============================================");
 
    BotStartTime = TimeCurrent() - 86400;
    GUIScale     = 1.0;
+
+   // Detectar tipo de cuenta — crítico para lógica Netting vs Hedging
+   EsCuentaNetting = DetectarNetting();
+   PrintFormat("Tipo de cuenta: %s | Magic=%d",
+               EsCuentaNetting ? "NETTING" : "HEDGING", Magic_Number);
 
    CargarParametros();
    bool restaurado = CargarEstado();
    if(!restaurado) estado = PRECHECK;
    if(!ValidarInputs()) return INIT_PARAMETERS_INCORRECT;
    CalcularRejillas(); CalcularRiesgo();
+   LeerMetricasBroker();   // primera lectura de P&L y volumen
    trade.SetExpertMagicNumber(Magic_Number);
    trade.SetTypeFillingBySymbol(_Symbol);
    trade.SetDeviationInPoints(30);
@@ -1904,12 +2724,15 @@ int OnInit()
          Print("Sin ordenes en broker — volviendo a PRECHECK");
       }
    }
-   DibujarLineasGrid(); DibujarPanel();
+   DibujarLineasGrid(); DibujarPanel(); DibujarPanelNoticias();
    return INIT_SUCCEEDED;
 }
 
 void OnTick()
 {
+   // Leer métricas reales del broker en cada tick (P&L, volumen posición)
+   LeerMetricasBroker();
+
    if(estado == PRECHECK || estado == STOPPED) return;
 
    if(estado == PENDING)
@@ -1951,6 +2774,7 @@ void OnDeinit(const int reason)
    else
       BorrarEstadoGuardado();
    BorrarTodo();
-   PrintFormat("GridBot v3.6.0 fin. Estado=%d | Acumulado=%.2f USD", estado, GananciaAcumulada);
+   PrintFormat("GridBot v3.8.0 fin. Estado=%d | Acumulado=%.2f USD | %s",
+               estado, GananciaAcumulada, EsCuentaNetting ? "NETTING" : "HEDGING");
 }
 //+------------------------------------------------------------------+
