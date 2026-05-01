@@ -835,7 +835,9 @@ void BorrarPanelTodo()
       if(StringFind(n, PFX + "L_ALR") == 0)      continue;
       if(StringFind(n, PFX + "B_ALR") == 0)      continue;
       if(StringFind(n, PFX + "B_CFGBTN") == 0)   continue;
+      if(StringFind(n, PFX + "B_NEWSBTN") == 0)  continue;   // FIX: no borrar botón NEWS
       if(StringFind(n, PFX + "B_DIRBADGE") == 0) continue;
+      if(StringFind(n, PFX + "NW_") == 0)        continue;   // FIX: no borrar panel noticias
       ObjectDelete(0, n);
    }
 }
@@ -846,23 +848,23 @@ void DibujarPanel()
    BorrarPanelTodo();
 
    // Panel ancho 256px (escalado) — etiquetas + valores con espacio garantizado
-   int W   = Sc(256); int PAD = Sc(14); int HDR = Sc(36);
+   int W   = Sc(210); int PAD = Sc(11); int HDR = Sc(30);
    int x   = PanelPosX; int y = PanelPosY;
    int sz8 = Sc(8); int sz9 = Sc(9); int sz10 = Sc(10); int sz11 = Sc(11); int sz12 = Sc(12);
 
    // Layout: etiqueta a la izquierda, valor anclado a la derecha
    int LBL_X    = x + PAD;
    int VAL_X    = x + W - PAD;     // alineado a la derecha
-   int LH       = Sc(22);          // altura uniforme de fila
-   int GAP      = Sc(10);
-   int SEC_GAP  = Sc(6);
+   int LH       = Sc(18);
+   int GAP      = Sc(8);
+   int SEC_GAP  = Sc(5);
 
    string minIcon = PanelMinimized ? "+" : "−";
-   int minSz  = Sc(22); int minY  = y + (HDR - minSz) / 2;
-   int logoSz = Sc(24); int logoY = y + (HDR - logoSz) / 2;
+   int minSz  = Sc(18); int minY  = y + (HDR - minSz) / 2;
+   int logoSz = Sc(20); int logoY = y + (HDR - logoSz) / 2;
 
    // ── Ajuste de altura del fondo — ya no incluye noticias (panel dedicado)
-   int totalH = PanelMinimized ? HDR : Sc(392);
+   int totalH = PanelMinimized ? HDR : Sc(320);
    PR("BG",     x, y, W, totalH, CLR_PANEL,   CLR_BORDER_LT, 1);
    PR("BG_HDR", x, y, W, HDR,    CLR_BG_DEEP, CLR_BG_DEEP,   0);
    if(!PanelMinimized) PHR("HDR_LN", x, y + HDR - 1, W, CLR_BORDER);
@@ -983,7 +985,7 @@ void DibujarPanel()
    // ── GANANCIA (card destacada) — leída directo del broker ────
    // En Netting: beneficio de la posición única fusionada
    // En Hedging: suma de todas las posiciones abiertas
-   int gnH = Sc(52);
+   int gnH = Sc(42);
    PR("GNCARD", LBL_X, cy, W - PAD*2, gnH, CLR_INPUT, CLR_BORDER, 1);
    string gnLabel = EsCuentaNetting ? "BENEFICIO NETTING (broker)" : "GANANCIA ACUMULADA";
    PL("GNLA", LBL_X + Sc(10), cy + Sc(6), gnLabel, CLR_TEXT_FAINT, sz8, "Arial");
@@ -997,7 +999,7 @@ void DibujarPanel()
    cy += gnH + GAP;
 
    // ── BOTONES ─────────────────────────────────────────────────
-   int btnH = Sc(30);
+   int btnH = Sc(26);
    if(estado == PRECHECK || estado == STOPPED)
    {
       PB("START", LBL_X, cy, W - PAD*2, btnH, "▶ INICIAR BOT", CLR_GREEN_DIM, CLR_TEXT, sz9, "Arial");
@@ -1047,8 +1049,8 @@ void CalcularLayoutConfig()
    double sc = GetUIScale();
    int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
    int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-   CfgW = MathMin((int)(560*sc), cw - 40); if(CfgW < 460) CfgW = 460;
-   CfgH = MathMin((int)(620*sc), ch - 40); if(CfgH < 460) CfgH = 460;
+   CfgW = MathMin((int)(460*sc), cw - 40); if(CfgW < 380) CfgW = 380;
+   CfgH = MathMin((int)(520*sc), ch - 40); if(CfgH < 400) CfgH = 400;
    CFG_HDR_H        = Sc(64);  CFG_TABS_H       = Sc(38);
    CFG_FOOT_H       = Sc(58);  CFG_BODY_PAD_TOP = Sc(18);
    CFG_ROW_GAP      = Sc(58);  CFG_PAD          = Sc(20);
@@ -1954,12 +1956,13 @@ void BuscarProximaNoticia()
    datetime ahora = TimeCurrent();
    datetime hasta = ahora + 24 * 3600;
 
-   MqlCalendarValue valores[];
-   if(CalendarValueHistory(valores, ahora, hasta) < 0) return;
-
+   // FIX: limpiar SIEMPRE antes de rellenar — evita eventos pasados que quedaron pegados
    ProximaNoticiaTime = 0;
    ProximaNoticiaNom  = "";
    NewsCache_Count    = 0;
+
+   MqlCalendarValue valores[];
+   if(CalendarValueHistory(valores, ahora, hasta) < 0) return;
 
    for(int i = 0; i < ArraySize(valores) && NewsCache_Count < MAX_NEWS_CACHE; i++)
    {
@@ -2116,7 +2119,7 @@ void DibujarPanelNoticias()
 
    int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
    int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-   int W   = Sc(300);   // más ancho para que quepan todos los campos sin solapar
+   int W   = Sc(240);
    int HDR = Sc(32);
    int PAD = Sc(12);
    int sz8 = Sc(8); int sz9 = Sc(9);
@@ -2215,7 +2218,7 @@ void DibujarPanelNoticias()
    NW_PL("COL_H", x+PAD+Sc(16),  cy+Sc(3), "HORA",   CLR_TEXT_MUTE, sz8);
    NW_PL("COL_N", x+PAD+Sc(64),  cy+Sc(3), "EVENTO", CLR_TEXT_MUTE, sz8);
    NW_PL("COL_C", x+W-PAD-Sc(44),cy+Sc(3), "CUR",    CLR_TEXT_MUTE, sz8);
-   NW_PL("COL_E", x+W-PAD-Sc(2), cy+Sc(3), "RESTA",  sz8==Sc(8)?Sc(8):sz8, CLR_TEXT_MUTE, sz8);
+   NW_PL("COL_E", x+W-PAD-Sc(2), cy+Sc(3), "RESTA", CLR_TEXT_MUTE, sz8);
    NW_PHR("PROX_LN", x+PAD, cy+Sc(16), W-PAD*2, CLR_BORDER_LT);
    cy += Sc(22);
 
@@ -2235,9 +2238,9 @@ void DibujarPanelNoticias()
           [eta]  x+W-PAD-14   right-aligned
       */
       int dotX  = x + PAD + Sc(2);
-      int horaX = x + PAD + Sc(16);
-      int nomX  = x + PAD + Sc(64);
-      int curX  = x + W - PAD - Sc(42);
+      int horaX = x + PAD + Sc(14);
+      int nomX  = x + PAD + Sc(52);   // más estrecho para W=240
+      int curX  = x + W - PAD - Sc(32);
       int etaX  = x + W - PAD - Sc(2);
 
       for(int i = 0; i < NewsCache_Count; i++)
@@ -2422,7 +2425,7 @@ void OnChartEvent(const int id, const long& lparam, const double& dparam, const 
    if(id == CHARTEVENT_MOUSE_MOVE)
    {
       int mx = (int)lparam; int my = (int)dparam; bool md = ((int)StringToInteger(sparam) & 1) != 0;
-      int pW   = Sc(256); int pHDR  = Sc(36);
+      int pW   = Sc(210); int pHDR  = Sc(30);
       int nHDR = Sc(32);
       int cHDR_h = CFG_HDR_H;
       int cw = (int)ChartGetInteger(0,CHART_WIDTH_IN_PIXELS);
@@ -2437,7 +2440,7 @@ void OnChartEvent(const int id, const long& lparam, const double& dparam, const 
                  mx <= ConfigPosX + (ConfigMinimized ? Sc(260) : CfgW) &&
                  my <= ConfigPosY + (ConfigMinimized ? Sc(40)  : cHDR_h))
             { DragConfig = true; DragOffX = mx-ConfigPosX; DragOffY = my-ConfigPosY; ChartSetInteger(0,CHART_MOUSE_SCROLL,false); }
-         else if(NewsVisible && NewsFilter_Active && NewsPosX >= 0 && mx >= NewsPosX && mx <= NewsPosX+Sc(300) && my >= NewsPosY && my <= NewsPosY+nHDR)
+         else if(NewsVisible && NewsFilter_Active && NewsPosX >= 0 && mx >= NewsPosX && mx <= NewsPosX+Sc(240) && my >= NewsPosY && my <= NewsPosY+nHDR)
             { DragNews = true; DragOffX = mx-NewsPosX; DragOffY = my-NewsPosY; ChartSetInteger(0,CHART_MOUSE_SCROLL,false); }
       }
 
@@ -2460,7 +2463,7 @@ void OnChartEvent(const int id, const long& lparam, const double& dparam, const 
       }
       else if(md && DragNews)
       {
-         int newX = MathMax(0, MathMin(mx-DragOffX, cw-Sc(300)));
+         int newX = MathMax(0, MathMin(mx-DragOffX, cw-Sc(240)));
          int newY = MathMax(0, MathMin(my-DragOffY, ch-nHDR));
          MoverPanelNoticias(newX - NewsPosX, newY - NewsPosY);
          NewsPosX = newX; NewsPosY = newY;
@@ -2738,12 +2741,13 @@ void OnTick()
    if(estado == PENDING)
    {
       CheckTrigger();
-      DibujarPanel();
+      DibujarPanel();   // PENDING: solo precio cambia frecuentemente
       return;
    }
 
    if(CheckKillSwitch()) return;
 
+   EstadoBot estadoAntes = estado;
    if(estado == ACTIVE)
    {
       CheckRange();
@@ -2754,7 +2758,16 @@ void OnTick()
       CheckRange();
    }
 
-   DibujarPanel();
+   // Solo redibujar el panel si algo cambió (no en cada tick para no destruir el panel noticias)
+   static datetime ultimoRedrawPanel = 0;
+   datetime ahora = TimeCurrent();
+   bool estadoCambio = (estado != estadoAntes);
+   // Redibujar: si cambió estado, o cada 3 segundos para actualizar precio/ganancia
+   if(estadoCambio || (ahora - ultimoRedrawPanel) >= 3)
+   {
+      ultimoRedrawPanel = ahora;
+      DibujarPanel();
+   }
 }
 
 void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest& request, const MqlTradeResult& result)
