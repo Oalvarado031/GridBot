@@ -45,7 +45,7 @@ input int    News_MinBefore    = 30;            // minutos a pausar ANTES del ev
 input int    News_MinAfter     = 30;            // minutos a esperar DESPUÉS del evento
 input bool   News_HighImpact   = true;          // filtrar alta importancia (NFP, Powell, tipos)
 input bool   News_MedImpact    = false;         // filtrar media importancia (IPC subyacente, etc.)
-input string News_Countries    = "USD,EUR";     // monedas a vigilar (separadas por coma)
+input string News_Countries    = "USD,EUR,CHF,GBP";  // monedas a vigilar (separadas por coma)
 input bool   News_OnlyCritical = true;          // solo eventos que realmente mueven el mercado
 
 //+------------------------------------------------------------------+
@@ -2167,14 +2167,14 @@ void DibujarPanelNoticias()
 
    int cy = y + HDR + Sc(8);
 
-   // ── Fila de estado ─────────────────────────────────────────
-   // Izquierda: configuración activa
+   // ── Fila 1: filtro activo (ancho completo) ─────────────────
    string filtroTxt = News_Countries + " | " + (News_HighImpact ? "HIGH" : "") +
                       ((News_HighImpact && News_MedImpact) ? "+MED" : (News_MedImpact ? "MED" : "")) +
                       (News_OnlyCritical ? " | CRITICOS" : " | TODOS");
-   NW_PL("FILT", x+PAD, cy+Sc(4), filtroTxt, CLR_TEXT_FAINT, sz8);
+   NW_PL("FILT", x+PAD, cy+Sc(3), filtroTxt, CLR_TEXT_FAINT, sz8);
+   cy += Sc(18);
 
-   // Derecha: estado del bot respecto a noticias
+   // ── Fila 2: badge de estado (fila propia, sin texto encima) ─
    string stTxt; color stClr; color stBg; color stBrd;
    if(PausadoPorNoticias)
       { stTxt="PAUSADO-NEWS"; stClr=CLR_RED;   stBg=CLR_RED_DEEP;   stBrd=CLR_RED_DIM; }
@@ -2182,11 +2182,10 @@ void DibujarPanelNoticias()
       { stTxt="VIGILANDO";   stClr=CLR_GREEN; stBg=CLR_GREEN_DEEP; stBrd=CLR_GREEN_DIM; }
    else
       { stTxt="BOT INACTIVO"; stClr=CLR_AMBER; stBg=CLR_AMBER_DEEP; stBrd=CLR_AMBER_DIM; }
-   int badgW = Sc(96); int badgH = Sc(20);
-   NW_PR("STBG",  x+W-PAD-badgW, cy,         badgW, badgH, stBg, stBrd, 1);
-   // Dot indicador
-   NW_PR("STDOT", x+W-PAD-badgW+Sc(7), cy+Sc(6), Sc(7), Sc(7), stClr, stClr, 0);
-   NW_PL("STTX",  x+W-PAD-badgW+Sc(18), cy+Sc(4), stTxt, stClr, sz8);
+   int badgW = W - PAD*2; int badgH = Sc(20);   // badge ocupa ancho completo — sin solapamiento
+   NW_PR("STBG",  x+PAD, cy, badgW, badgH, stBg, stBrd, 1);
+   NW_PR("STDOT", x+PAD+Sc(7), cy+Sc(6), Sc(7), Sc(7), stClr, stClr, 0);
+   NW_PL("STTX",  x+PAD+Sc(18), cy+Sc(4), stTxt, stClr, sz8);
    cy += Sc(26);
 
    // ── Fila de explicación ─────────────────────────────────────
@@ -2237,47 +2236,46 @@ void DibujarPanelNoticias()
           [cur]  x+W-PAD-44   26px  → 3 letras
           [eta]  x+W-PAD-14   right-aligned
       */
+      // Columnas fijas para W=290:
+      // dot(7) | hora(40) | nombre(variable) | cur(28) | eta(32)
       int dotX  = x + PAD + Sc(2);
       int horaX = x + PAD + Sc(14);
-      int nomX  = x + PAD + Sc(52);   // más estrecho para W=240
-      int curX  = x + W - PAD - Sc(32);
+      int nomX  = x + PAD + Sc(56);
+      int curX  = x + W - PAD - Sc(58);   // moneda bien separada del nombre
       int etaX  = x + W - PAD - Sc(2);
 
       for(int i = 0; i < NewsCache_Count; i++)
       {
          int ey = cy + i * LH;
-         // Fondo alterno suave
          if(i % 2 == 0)
             NW_PR("EV_BG_"+IntegerToString(i), x+PAD, ey, W-PAD*2, LH-1, CLR_BG_DEEP, CLR_BG_DEEP, 0);
 
-         // Dot de importancia
          color dotC = NewsCache_IsHigh[i] ? CLR_RED : CLR_AMBER;
          NW_PR("EV_DOT_"+IntegerToString(i), dotX, ey+LH/2-Sc(3), Sc(7), Sc(7), dotC, dotC, 0);
 
-         // Hora (HH:MM)
-         NW_PL("EV_HR_"+IntegerToString(i),  horaX, ey+Sc(5),
+         NW_PL("EV_HR_"+IntegerToString(i), horaX, ey+Sc(5),
                TimeToString(NewsCache_Times[i], TIME_MINUTES), CLR_TEXT, sz9, "Consolas");
 
-         // Nombre del evento — espacio disponible hasta curX-8
-         int nomMax = (int)MathRound((curX - nomX - Sc(8)) / (sz8 * 0.75));
+         // Nombre: espacio fijo entre nomX y curX-6
+         int pixDisp = curX - nomX - Sc(6);
+         int nomMax  = (int)MathRound(pixDisp / MathMax(sz8 * 0.68, 1));
          if(nomMax < 4)  nomMax = 4;
-         if(nomMax > 24) nomMax = 24;
+         if(nomMax > 22) nomMax = 22;
          string nom = StringLen(NewsCache_Names[i]) > nomMax
                       ? StringSubstr(NewsCache_Names[i], 0, nomMax-1) + "."
                       : NewsCache_Names[i];
-         NW_PL("EV_NM_"+IntegerToString(i),  nomX,  ey+Sc(5), nom, CLR_TEXT, sz8);
+         NW_PL("EV_NM_"+IntegerToString(i), nomX, ey+Sc(5), nom, CLR_TEXT, sz8);
 
-         // Moneda
-         NW_PL("EV_CUR_"+IntegerToString(i), curX,  ey+Sc(5), NewsCache_Currencies[i], dotC, sz8);
+         // Moneda — separada del nombre por curX fijo
+         NW_PL("EV_CUR_"+IntegerToString(i), curX, ey+Sc(5), NewsCache_Currencies[i], dotC, sz8);
 
-         // Tiempo restante (alineado a la derecha)
+         // Tiempo restante
          int minR = (int)((NewsCache_Times[i] - TimeCurrent()) / 60);
          if(minR < 0) minR = 0;
          string eta = (minR < 60)
             ? IntegerToString(minR) + "m"
             : IntegerToString(minR/60) + "h" + IntegerToString(minR % 60) + "m";
-         // PL no tiene anchor_right, aproximamos con posición fija derecha
-         NW_PL("EV_ETA_"+IntegerToString(i), etaX - Sc(StringLen(eta)*6), ey+Sc(14), eta, CLR_TEXT_FAINT, sz8);
+         NW_PL("EV_ETA_"+IntegerToString(i), etaX - Sc(StringLen(eta)*6), ey+Sc(5), eta, CLR_TEXT_FAINT, sz8);
       }
       cy += NewsCache_Count * LH;
    }
