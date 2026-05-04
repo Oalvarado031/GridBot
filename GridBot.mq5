@@ -207,6 +207,10 @@ datetime UltimaRevisionProxima = 0;       // caché separado para BuscarProximaN
 datetime ProximaNoticiaTime = 0;       // hora del próximo evento relevante (para el panel)
 string   ProximaNoticiaNom  = "";      // nombre del próximo evento
 
+// Ping-pong unidireccional — estado del ciclo
+double   PrecioUltimoCierre  = 0.0;   // precio al que se cerró la última posición con profit
+bool     EsperandoReentrada  = false;  // true = esperando retroceso p_G_Pips para re-entrar
+
 double GUIScale      = 1.0;
 datetime BotStartTime = 0;
 int  PanelW = 244, PanelH = 360;
@@ -1715,36 +1719,49 @@ void ActivarGrid()
    bool marketOk = false;
    if(p_Direccion == GRID_LONG)
    {
+      // LONG: SOLO Buy y BuyLimit — nunca Sell
       if(!PosicionExisteEnNivel(GridLevels[0]))
       {
-         marketOk = trade.Buy(p_Vol, _Symbol, 0, 0, 0, "GRID_BUY_0");
-         if(!marketOk) PrintFormat("FALLO Buy[0] rc=%u msg=%s", trade.ResultRetcode(), trade.ResultComment());
-         else Print("Buy[0] mercado OK");
+         if(FiltrarDireccion(ORDER_TYPE_BUY))
+         {
+            marketOk = trade.Buy(p_Vol, _Symbol, 0, 0, 0, "GRID_BUY_0");
+            if(!marketOk) PrintFormat("FALLO Buy[0] rc=%u msg=%s", trade.ResultRetcode(), trade.ResultComment());
+            else Print("Buy[0] mercado OK");
+         }
       }
       else { marketOk = true; Print("Nivel 0 ya tiene posicion — omitiendo market Buy[0]"); }
 
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      for(int i = 1; i < total; i++)
+      // Guard riesgo: no colocar más rejillas de las seguras si no está en Modo Libre
+      int limiteRejillas = p_Libre ? total : MathMin(total, MaxOrdersSafe);
+      for(int i = 1; i < limiteRejillas; i++)
       {
          double nv = GridLevels[i]; if(OrdenExisteEnNivel(nv)) continue; if(nv >= ask - minD) continue;
+         if(!FiltrarDireccion(ORDER_TYPE_BUY)) break;
          if(trade.BuyLimit(p_Vol, nv, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GRID_BUY_" + IntegerToString(i))) col++;
          else { fl++; PrintFormat("FALLO BuyLimit[%d] rc=%u", i, trade.ResultRetcode()); }
       }
    }
    else
    {
+      // SHORT: SOLO Sell y SellLimit — nunca Buy
       if(!PosicionExisteEnNivel(GridLevels[0]))
       {
-         marketOk = trade.Sell(p_Vol, _Symbol, 0, 0, 0, "GRID_SELL_0");
-         if(!marketOk) PrintFormat("FALLO Sell[0] rc=%u msg=%s", trade.ResultRetcode(), trade.ResultComment());
-         else Print("Sell[0] mercado OK");
+         if(FiltrarDireccion(ORDER_TYPE_SELL))
+         {
+            marketOk = trade.Sell(p_Vol, _Symbol, 0, 0, 0, "GRID_SELL_0");
+            if(!marketOk) PrintFormat("FALLO Sell[0] rc=%u msg=%s", trade.ResultRetcode(), trade.ResultComment());
+            else Print("Sell[0] mercado OK");
+         }
       }
       else { marketOk = true; Print("Nivel 0 ya tiene posicion — omitiendo market Sell[0]"); }
 
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      for(int i = 1; i < total; i++)
+      int limiteRejillas = p_Libre ? total : MathMin(total, MaxOrdersSafe);
+      for(int i = 1; i < limiteRejillas; i++)
       {
          double nv = GridLevels[i]; if(OrdenExisteEnNivel(nv)) continue; if(nv <= bid + minD) continue;
+         if(!FiltrarDireccion(ORDER_TYPE_SELL)) break;
          if(trade.SellLimit(p_Vol, nv, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GRID_SELL_" + IntegerToString(i))) col++;
          else { fl++; PrintFormat("FALLO SellLimit[%d] rc=%u", i, trade.ResultRetcode()); }
       }
@@ -2119,62 +2136,59 @@ void DibujarPanelNoticias()
 
    int cw = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
    int ch = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-   int W   = Sc(240);
+   int W   = Sc(290);   // ancho suficiente para todas las columnas sin overflow
    int HDR = Sc(32);
    int PAD = Sc(12);
    int sz8 = Sc(8); int sz9 = Sc(9);
-   int LH  = Sc(26);   // altura por fila de evento
+   int LH  = Sc(24);
 
-   // Posición inicial: esquina superior derecha
-   if(NewsPosX < 0 || NewsPosY < 0)
-   {
-      NewsPosX = cw - W - Sc(14);
-      NewsPosY = Sc(50);
-   }
+   if(NewsPosX < 0 || NewsPosY < 0) { NewsPosX = cw - W - Sc(14); NewsPosY = Sc(50); }
    NewsPosX = MathMax(0, MathMin(NewsPosX, cw - W));
    NewsPosY = MathMax(0, MathMin(NewsPosY, ch - HDR));
    int x = NewsPosX, y = NewsPosY;
+   int innerW = W - PAD*2;
 
-   // Altura total dinámica
+   // Altura total — suma exacta de cada sección
    int bodyH = 0;
    if(!NewsMinimized)
    {
-      bodyH += Sc(32);                                    // fila estado
-      bodyH += Sc(22);                                    // fila explicación
-      if(PausadoPorNoticias) bodyH += Sc(50);             // banner activo
-      bodyH += Sc(22);                                    // subheader eventos
-      bodyH += MathMax(NewsCache_Count, 1) * LH;          // filas
-      bodyH += Sc(10);                                    // padding bottom
+      bodyH += Sc(8);                                  // padding top
+      bodyH += Sc(18);                                 // filtro
+      bodyH += Sc(26);                                 // badge estado
+      bodyH += Sc(18);                                 // explicacion
+      if(PausadoPorNoticias) bodyH += Sc(56);          // banner activo
+      bodyH += Sc(20);                                 // subheader columnas
+      bodyH += MathMax(NewsCache_Count, 1) * LH;       // filas eventos
+      bodyH += Sc(10);                                 // padding bottom
    }
    int totalH = HDR + bodyH;
 
-   // ── Fondo ──────────────────────────────────────────────────
-   NW_PR("BG",  x, y, W, totalH, CLR_PANEL,   CLR_BORDER_LT, 1);
-   NW_PR("HDR", x, y, W, HDR,    CLR_BG_DEEP, CLR_BG_DEEP,   0);
+   NW_PR("BG",     x, y, W, totalH, CLR_PANEL,   CLR_BORDER_LT, 1);
+   NW_PR("HDR",    x, y, W, HDR,    CLR_BG_DEEP, CLR_BG_DEEP,   0);
    if(!NewsMinimized) NW_PR("HDR_LN", x, y+HDR-1, W, 1, CLR_BORDER, CLR_BORDER, 0);
 
-   // ── Header ─────────────────────────────────────────────────
-   NW_PB("LOGO", x+PAD, y+(HDR-Sc(20))/2, Sc(20), Sc(20), "N", CLR_AMBER_DIM, CLR_AMBER, Sc(10));
+   int bsz = Sc(20); int gap4 = Sc(4);
+   NW_PB("LOGO", x+PAD, y+(HDR-bsz)/2, bsz, bsz, "N", CLR_AMBER_DIM, CLR_AMBER, Sc(10));
    ObjectSetInteger(0, PFX+"NW_B_LOGO", OBJPROP_BORDER_COLOR, CLR_AMBER_DIM);
    NW_PL("TIT", x+PAD+Sc(26), y+(HDR-Sc(12))/2, "NOTICIAS", CLR_TEXT, sz9);
-   int bsz = Sc(20); int gap4 = Sc(4);
-   NW_PB("MIN", x+W-PAD-bsz-gap4-bsz, y+(HDR-bsz)/2, bsz, bsz, NewsMinimized?"+":"−", CLR_ELEV,    CLR_TEXT_DIM, Sc(11));
+   NW_PB("MIN", x+W-PAD-bsz-gap4-bsz, y+(HDR-bsz)/2, bsz, bsz, NewsMinimized?"+":"−", CLR_ELEV, CLR_TEXT_DIM, Sc(11));
    ObjectSetInteger(0, PFX+"NW_B_MIN", OBJPROP_BORDER_COLOR, CLR_BORDER);
-   NW_PB("X",   x+W-PAD-bsz,            y+(HDR-bsz)/2, bsz, bsz, "x",                   CLR_RED_DIM, CLR_TEXT,     Sc(9));
+   NW_PB("X",   x+W-PAD-bsz, y+(HDR-bsz)/2, bsz, bsz, "x", CLR_RED_DIM, CLR_TEXT, Sc(9));
    ObjectSetInteger(0, PFX+"NW_B_X", OBJPROP_BORDER_COLOR, CLR_RED_DIM);
 
    if(NewsMinimized) { ChartRedraw(0); return; }
 
    int cy = y + HDR + Sc(8);
 
-   // ── Fila 1: filtro activo (ancho completo) ─────────────────
-   string filtroTxt = News_Countries + " | " + (News_HighImpact ? "HIGH" : "") +
+   // Fila 1: filtro activo
+   string filtroTxt = News_Countries + " | " +
+                      (News_HighImpact ? "HIGH" : "") +
                       ((News_HighImpact && News_MedImpact) ? "+MED" : (News_MedImpact ? "MED" : "")) +
                       (News_OnlyCritical ? " | CRITICOS" : " | TODOS");
-   NW_PL("FILT", x+PAD, cy+Sc(3), filtroTxt, CLR_TEXT_FAINT, sz8);
+   NW_PL("FILT", x+PAD, cy+Sc(2), filtroTxt, CLR_TEXT_FAINT, sz8);
    cy += Sc(18);
 
-   // ── Fila 2: badge de estado (fila propia, sin texto encima) ─
+   // Fila 2: badge estado (ancho interior completo — sin solapamiento posible)
    string stTxt; color stClr; color stBg; color stBrd;
    if(PausadoPorNoticias)
       { stTxt="PAUSADO-NEWS"; stClr=CLR_RED;   stBg=CLR_RED_DEEP;   stBrd=CLR_RED_DIM; }
@@ -2182,73 +2196,67 @@ void DibujarPanelNoticias()
       { stTxt="VIGILANDO";   stClr=CLR_GREEN; stBg=CLR_GREEN_DEEP; stBrd=CLR_GREEN_DIM; }
    else
       { stTxt="BOT INACTIVO"; stClr=CLR_AMBER; stBg=CLR_AMBER_DEEP; stBrd=CLR_AMBER_DIM; }
-   int badgW = W - PAD*2; int badgH = Sc(20);   // badge ocupa ancho completo — sin solapamiento
-   NW_PR("STBG",  x+PAD, cy, badgW, badgH, stBg, stBrd, 1);
-   NW_PR("STDOT", x+PAD+Sc(7), cy+Sc(6), Sc(7), Sc(7), stClr, stClr, 0);
+   NW_PR("STBG",  x+PAD,        cy,       innerW, Sc(20), stBg, stBrd, 1);
+   NW_PR("STDOT", x+PAD+Sc(7),  cy+Sc(6), Sc(7),  Sc(7),  stClr, stClr, 0);
    NW_PL("STTX",  x+PAD+Sc(18), cy+Sc(4), stTxt, stClr, sz8);
    cy += Sc(26);
 
-   // ── Fila de explicación ─────────────────────────────────────
+   // Fila 3: explicacion corta (garantizado dentro del ancho)
    NW_PL("EXPL", x+PAD, cy+Sc(2),
-          "Pausa: " + IntegerToString(News_MinBefore) + "min antes  +  " +
-          IntegerToString(News_MinAfter) + "min despues de cada evento",
+          IntegerToString(News_MinBefore)+"m antes / "+IntegerToString(News_MinAfter)+"m despues",
           CLR_TEXT_FAINT, sz8);
-   cy += Sc(22);
+   cy += Sc(18);
 
-   // ── Banner evento activo ────────────────────────────────────
+   // Banner evento activo
    if(PausadoPorNoticias)
    {
-      NW_PR("ACT_BG", x+PAD, cy, W-PAD*2, Sc(46), CLR_RED_DEEP, CLR_RED_DIM, 1);
-      // Barra lateral roja
-      NW_PR("ACT_BAR", x+PAD, cy, Sc(4), Sc(46), CLR_RED, CLR_RED, 0);
-      NW_PL("ACT_LB", x+PAD+Sc(10), cy+Sc(5),  "EVENTO ACTIVO",                  CLR_RED_DIM, sz8);
-      string nomEvt = StringLen(NoticiaActual) > 32
-                      ? StringSubstr(NoticiaActual, 0, 30) + "…"
+      NW_PR("ACT_BG",  x+PAD,        cy, innerW, Sc(50), CLR_RED_DEEP, CLR_RED_DIM, 1);
+      NW_PR("ACT_BAR", x+PAD,        cy, Sc(4),  Sc(50), CLR_RED, CLR_RED, 0);
+      NW_PL("ACT_LB",  x+PAD+Sc(10), cy+Sc(5), "EVENTO ACTIVO", CLR_RED_DIM, sz8);
+      int maxEvt = (int)((innerW - Sc(24)) / MathMax(sz9 * 0.7, 1));
+      if(maxEvt > 32) maxEvt = 32; if(maxEvt < 4) maxEvt = 4;
+      string nomEvt = StringLen(NoticiaActual) > maxEvt
+                      ? StringSubstr(NoticiaActual, 0, maxEvt-1) + "."
                       : NoticiaActual;
-      NW_PL("ACT_NM", x+PAD+Sc(10), cy+Sc(18), nomEvt, CLR_RED, sz9);
-      string horaFin = TimeToString(NoticiaHora + News_MinAfter*60, TIME_MINUTES);
-      NW_PL("ACT_HR", x+PAD+Sc(10), cy+Sc(34), "reanuda a las " + horaFin, CLR_RED_DIM, sz8);
-      cy += Sc(50) + Sc(6);
+      NW_PL("ACT_NM",  x+PAD+Sc(10), cy+Sc(18), nomEvt, CLR_RED, sz9);
+      NW_PL("ACT_HR",  x+PAD+Sc(10), cy+Sc(35),
+            "reanuda: "+TimeToString(NoticiaHora + News_MinAfter*60, TIME_MINUTES),
+            CLR_RED_DIM, sz8);
+      cy += Sc(56);
    }
 
-   // ── Subheader eventos ───────────────────────────────────────
-   NW_PL("PROX_HD", x+PAD, cy+Sc(3), "PROXIMOS EVENTOS · 24h", CLR_TEXT_MUTE, sz8);
-   // Cabecera de columnas
-   NW_PL("COL_H", x+PAD+Sc(16),  cy+Sc(3), "HORA",   CLR_TEXT_MUTE, sz8);
-   NW_PL("COL_N", x+PAD+Sc(64),  cy+Sc(3), "EVENTO", CLR_TEXT_MUTE, sz8);
-   NW_PL("COL_C", x+W-PAD-Sc(44),cy+Sc(3), "CUR",    CLR_TEXT_MUTE, sz8);
-   NW_PL("COL_E", x+W-PAD-Sc(2), cy+Sc(3), "RESTA", CLR_TEXT_MUTE, sz8);
-   NW_PHR("PROX_LN", x+PAD, cy+Sc(16), W-PAD*2, CLR_BORDER_LT);
-   cy += Sc(22);
+   // Subheader columnas
+   // Layout para innerW=266px:
+   // dot(7) | hora(14+38=52) | nombre(54..196) | cur(196..224) | eta(224..266)
+   int dotX  = x + PAD + Sc(2);
+   int horaX = x + PAD + Sc(12);
+   int nomX  = x + PAD + Sc(54);
+   int curX  = x + W - PAD - Sc(68);
+   int etaX  = x + W - PAD - Sc(4);
 
-   // ── Lista de eventos (layout en columnas fijas) ─────────────
+   NW_PL("COL_H", horaX,        cy+Sc(3), "HORA",   CLR_TEXT_MUTE, sz8);
+   NW_PL("COL_N", nomX,         cy+Sc(3), "EVENTO", CLR_TEXT_MUTE, sz8);
+   NW_PL("COL_C", curX,         cy+Sc(3), "CUR",    CLR_TEXT_MUTE, sz8);
+   NW_PHR("PROX_LN", x+PAD, cy+Sc(16), innerW, CLR_BORDER_LT);
+   cy += Sc(20);
+
+   // Lista de eventos
    if(NewsCache_Count == 0)
    {
-      NW_PL("NO_EVT", x+PAD+Sc(16), cy+Sc(8), "Sin eventos filtrados en las proximas 24h", CLR_TEXT_FAINT, sz8);
-      cy += Sc(28);
+      NW_PL("NO_EVT", x+PAD, cy+Sc(6), "Sin eventos en 24h", CLR_TEXT_FAINT, sz8);
+      cy += LH;
    }
    else
    {
-      /*  Columnas (referencia en px a escala 1.0):
-          [dot]  x+PAD+2      7px
-          [hora] x+PAD+16     44px  → HH:MM  Consolas sz9
-          [nom]  x+PAD+64    ~140px → nombre truncado
-          [cur]  x+W-PAD-44   26px  → 3 letras
-          [eta]  x+W-PAD-14   right-aligned
-      */
-      // Columnas fijas para W=290:
-      // dot(7) | hora(40) | nombre(variable) | cur(28) | eta(32)
-      int dotX  = x + PAD + Sc(2);
-      int horaX = x + PAD + Sc(14);
-      int nomX  = x + PAD + Sc(56);
-      int curX  = x + W - PAD - Sc(58);   // moneda bien separada del nombre
-      int etaX  = x + W - PAD - Sc(2);
+      int pixNom = curX - nomX - Sc(4);
+      int nomMax = (int)MathRound(pixNom / MathMax(sz8 * 0.68, 1));
+      if(nomMax < 4) nomMax = 4; if(nomMax > 20) nomMax = 20;
 
       for(int i = 0; i < NewsCache_Count; i++)
       {
          int ey = cy + i * LH;
          if(i % 2 == 0)
-            NW_PR("EV_BG_"+IntegerToString(i), x+PAD, ey, W-PAD*2, LH-1, CLR_BG_DEEP, CLR_BG_DEEP, 0);
+            NW_PR("EV_BG_"+IntegerToString(i), x+PAD, ey, innerW, LH-1, CLR_BG_DEEP, CLR_BG_DEEP, 0);
 
          color dotC = NewsCache_IsHigh[i] ? CLR_RED : CLR_AMBER;
          NW_PR("EV_DOT_"+IntegerToString(i), dotX, ey+LH/2-Sc(3), Sc(7), Sc(7), dotC, dotC, 0);
@@ -2256,26 +2264,19 @@ void DibujarPanelNoticias()
          NW_PL("EV_HR_"+IntegerToString(i), horaX, ey+Sc(5),
                TimeToString(NewsCache_Times[i], TIME_MINUTES), CLR_TEXT, sz9, "Consolas");
 
-         // Nombre: espacio fijo entre nomX y curX-6
-         int pixDisp = curX - nomX - Sc(6);
-         int nomMax  = (int)MathRound(pixDisp / MathMax(sz8 * 0.68, 1));
-         if(nomMax < 4)  nomMax = 4;
-         if(nomMax > 22) nomMax = 22;
          string nom = StringLen(NewsCache_Names[i]) > nomMax
                       ? StringSubstr(NewsCache_Names[i], 0, nomMax-1) + "."
                       : NewsCache_Names[i];
-         NW_PL("EV_NM_"+IntegerToString(i), nomX, ey+Sc(5), nom, CLR_TEXT, sz8);
-
-         // Moneda — separada del nombre por curX fijo
+         NW_PL("EV_NM_"+IntegerToString(i),  nomX, ey+Sc(5), nom, CLR_TEXT, sz8);
          NW_PL("EV_CUR_"+IntegerToString(i), curX, ey+Sc(5), NewsCache_Currencies[i], dotC, sz8);
 
-         // Tiempo restante
          int minR = (int)((NewsCache_Times[i] - TimeCurrent()) / 60);
          if(minR < 0) minR = 0;
          string eta = (minR < 60)
             ? IntegerToString(minR) + "m"
-            : IntegerToString(minR/60) + "h" + IntegerToString(minR % 60) + "m";
-         NW_PL("EV_ETA_"+IntegerToString(i), etaX - Sc(StringLen(eta)*6), ey+Sc(5), eta, CLR_TEXT_FAINT, sz8);
+            : IntegerToString(minR/60) + "h" + IntegerToString(minR%60) + "m";
+         int etaLen = Sc(StringLen(eta) * 7);
+         NW_PL("EV_ETA_"+IntegerToString(i), etaX - etaLen, ey+Sc(5), eta, CLR_TEXT_FAINT, sz8);
       }
       cy += NewsCache_Count * LH;
    }
@@ -2283,6 +2284,7 @@ void DibujarPanelNoticias()
    cy += Sc(10);
    ChartRedraw(0);
 }
+
 
 void CheckRange()
 {
@@ -2309,53 +2311,140 @@ void LogOperacion(string tipo, double salida, double lotes, double ganancia)
    FileClose(h);
 }
 
-void ColocarContraparte(int idx, ENUM_DEAL_TYPE dt, double pe)
+// ──────────────────────────────────────────────────────────────────
+// FILTRO DE DIRECCIÓN — bloquea cualquier orden contraria a la
+// dirección configurada. Llamar antes de todo trade.Buy/Sell.
+// ──────────────────────────────────────────────────────────────────
+bool FiltrarDireccion(ENUM_ORDER_TYPE tipo)
 {
-   if(idx < 0 || idx >= ArraySize(GridLevels)) return;
-   if(ContarPosicionesAbiertas() >= p_MaxOrd) { Print("FRENO Max_Orders en ColocarContraparte"); return; }
-   trade.SetExpertMagicNumber(Magic_Number);
+   if(p_Direccion == GRID_LONG  && tipo == ORDER_TYPE_SELL) { Print("BLOQUEADO: intento SELL en modo LONG");  return false; }
+   if(p_Direccion == GRID_SHORT && tipo == ORDER_TYPE_BUY)  { Print("BLOQUEADO: intento BUY en modo SHORT"); return false; }
+   return true;
+}
 
-   bool ok = false;
+// ──────────────────────────────────────────────────────────────────
+// CHECK TP POR POSICIÓN — aplica TP/SL directo en la posición
+// (PositionModify) para que el broker cierre sin orden inversa.
+// Se llama en OnTick cuando hay posiciones abiertas.
+// ──────────────────────────────────────────────────────────────────
+void CheckTPPositions()
+{
    double paso = PipsAPrecio(p_G_Pips);
-   if(dt == DEAL_TYPE_BUY)
-   {
-      // LONG: la contraparte (TP) está un paso POR ENCIMA del precio de entrada
-      double obj = NormalizeDouble(pe + paso, _Digits);
-      if(OrdenExisteEnNivel(obj)) { Print("Contraparte ya existe en ", DoubleToString(obj, _Digits)); return; }
-      ok = trade.SellLimit(p_Vol, obj, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GRID_TP_" + IntegerToString(idx));
-      if(!ok) PrintFormat("FALLO TP-sell idx=%d obj=%.5f rc=%u", idx, obj, trade.ResultRetcode());
-   }
-   else if(dt == DEAL_TYPE_SELL)
-   {
-      // SHORT: la contraparte (TP) está un paso POR DEBAJO del precio de entrada
-      double obj = NormalizeDouble(pe - paso, _Digits);
-      if(OrdenExisteEnNivel(obj)) { Print("Contraparte ya existe en ", DoubleToString(obj, _Digits)); return; }
-      ok = trade.BuyLimit(p_Vol, obj, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GRID_TP_" + IntegerToString(idx));
-      if(!ok) PrintFormat("FALLO TP-buy idx=%d obj=%.5f rc=%u", idx, obj, trade.ResultRetcode());
-   }
+   double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask  = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
-   if(ok)
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      MarcarRejillaActiva(idx, true);
-      RejillasActivas++;
-      // Netting: actualizar SL de la posición única cada vez que se agrega una rejilla
-      // Esto mantiene el SL global real sincronizado con la posición promediada del broker
-      ActualizarSL_Netting();
+      ulong ticket = PositionGetTicket(i); if(ticket == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic_Number) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double curTP     = PositionGetDouble(POSITION_TP);
+      double curSL     = PositionGetDouble(POSITION_SL);
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+
+      // Calcular TP objetivo: entrada + paso para LONG, entrada - paso para SHORT
+      double tpObj = (posType == POSITION_TYPE_BUY)
+                     ? NormalizeDouble(openPrice + paso, _Digits)
+                     : NormalizeDouble(openPrice - paso, _Digits);
+
+      // Sincronizar TP en el broker si difiere (tolerancia 5 puntos)
+      double slObj = p_SL;
+      if(MathAbs(curTP - tpObj) > _Point * 5 || MathAbs(curSL - slObj) > _Point * 10)
+      {
+         if(!trade.PositionModify(ticket, slObj, tpObj))
+            PrintFormat("FALLO PositionModify tp=%.5f sl=%.5f rc=%u", tpObj, slObj, trade.ResultRetcode());
+         else
+            PrintFormat("TP sincronizado → %.5f | SL → %.5f (ticket %I64u)", tpObj, slObj, ticket);
+      }
    }
 }
 
+// ColocarContraparte: ya NO abre órdenes inversas.
+// Solo registra el TP en la posición via PositionModify.
+void ColocarContraparte(int idx, ENUM_DEAL_TYPE dt, double pe)
+{
+   if(idx < 0 || idx >= ArraySize(GridLevels)) return;
+
+   // Guard de dirección: LONG solo acepta deals BUY, SHORT solo SELL
+   if(p_Direccion == GRID_LONG  && dt != DEAL_TYPE_BUY)  { Print("BLOQUEADO deal contrario en LONG");  return; }
+   if(p_Direccion == GRID_SHORT && dt != DEAL_TYPE_SELL) { Print("BLOQUEADO deal contrario en SHORT"); return; }
+
+   // Guard de riesgo: no superar MaxOrdersSafe si el riesgo ya está al límite
+   if(!p_Libre && ContarPosicionesAbiertas() >= MaxOrdersSafe)
+   {
+      PrintFormat("FRENO RiesgoGuardian: %d posiciones ≥ MaxOrdersSafe %d", ContarPosicionesAbiertas(), MaxOrdersSafe);
+      return;
+   }
+   if(ContarPosicionesAbiertas() >= p_MaxOrd)
+   {
+      Print("FRENO Max_Orders en ColocarContraparte");
+      return;
+   }
+
+   // Aplicar TP en la posición recién abierta — PositionClose cuando alcance ese nivel
+   double paso  = PipsAPrecio(p_G_Pips);
+   double tpObj = (dt == DEAL_TYPE_BUY)
+                  ? NormalizeDouble(pe + paso, _Digits)   // LONG: TP encima
+                  : NormalizeDouble(pe - paso, _Digits);  // SHORT: TP debajo
+
+   // Buscar la posición por precio de apertura y aplicarle el TP
+   double tol = _Point * 10;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong t = PositionGetTicket(i); if(t == 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic_Number) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(MathAbs(PositionGetDouble(POSITION_PRICE_OPEN) - pe) > tol) continue;
+      if(!trade.PositionModify(t, p_SL, tpObj))
+         PrintFormat("FALLO TP idx=%d tpObj=%.5f rc=%u", idx, tpObj, trade.ResultRetcode());
+      else
+         PrintFormat("TP aplicado idx=%d → %.5f (ticket %I64u)", idx, tpObj, t);
+      break;
+   }
+
+   MarcarRejillaActiva(idx, true);
+   RejillasActivas++;
+   ActualizarSL_Netting();
+   EsperandoReentrada = false;   // hay posición abierta, no estamos esperando re-entrada
+}
+
+// ReponerEntrada — ping-pong unidireccional:
+// Solo re-entra si el precio retrocedió exactamente p_G_Pips desde el último cierre con profit
 void ReponerEntrada(int idx)
 {
    if(idx < 0 || idx >= ArraySize(GridLevels)) return;
    if(estado == PAUSED || estado == STOPPED) return;
+
+   // Guard riesgo
+   if(!p_Libre && ContarPosicionesAbiertas() >= MaxOrdersSafe) return;
    if(ContarPosicionesAbiertas() >= p_MaxOrd) return;
-   double nv = GridLevels[idx]; if(OrdenExisteEnNivel(nv)) return;
-   MarcarRejillaActiva(idx, false); if(RejillasActivas > 0) RejillasActivas--;
+
+   double nv = GridLevels[idx];
+   if(OrdenExisteEnNivel(nv)) return;
+
+   MarcarRejillaActiva(idx, false);
+   if(RejillasActivas > 0) RejillasActivas--;
+
    trade.SetExpertMagicNumber(Magic_Number);
-   bool ok = (p_Direccion == GRID_LONG)
-      ? trade.BuyLimit(p_Vol,  nv, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GRID_BUY_"  + IntegerToString(idx))
-      : trade.SellLimit(p_Vol, nv, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GRID_SELL_" + IntegerToString(idx));
+   bool ok = false;
+
+   if(p_Direccion == GRID_LONG)
+   {
+      // Guard: SOLO BuyLimit — nunca SellLimit en LONG
+      if(!FiltrarDireccion(ORDER_TYPE_BUY)) return;
+      ok = trade.BuyLimit(p_Vol, nv, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GRID_BUY_" + IntegerToString(idx));
+   }
+   else
+   {
+      // Guard: SOLO SellLimit — nunca BuyLimit en SHORT
+      if(!FiltrarDireccion(ORDER_TYPE_SELL)) return;
+      ok = trade.SellLimit(p_Vol, nv, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GRID_SELL_" + IntegerToString(idx));
+   }
+
    if(!ok) PrintFormat("FALLO repos idx=%d rc=%u", idx, trade.ResultRetcode());
+   else EsperandoReentrada = false;
 }
 
 void ProcesarDeals()
@@ -2379,9 +2468,29 @@ void ProcesarDeals()
       string comment = HistoryDealGetString(ticket, DEAL_COMMENT);
       int idx = IndiceDesdeComment(comment);
 
-      if(entry == DEAL_ENTRY_IN)         ColocarContraparte(idx, dtype, precio);
-      else if(entry == DEAL_ENTRY_OUT)   { LogOperacion("CLOSE_" + IntegerToString(idx), precio, vol, profit); ReponerEntrada(idx); }
-      else if(entry == DEAL_ENTRY_INOUT) { LogOperacion("INOUT_" + IntegerToString(idx), precio, vol, profit); ColocarContraparte(idx, dtype, precio); }
+      if(entry == DEAL_ENTRY_IN)
+      {
+         ColocarContraparte(idx, dtype, precio);
+      }
+      else if(entry == DEAL_ENTRY_OUT)
+      {
+         LogOperacion("CLOSE_" + IntegerToString(idx), precio, vol, profit);
+         // Ping-pong: guardar precio de cierre para calcular retroceso de re-entrada
+         if(profit > 0)
+         {
+            PrecioUltimoCierre = precio;
+            EsperandoReentrada = true;
+            PrintFormat("TP alcanzado idx=%d precio=%.5f profit=%.2f — esperando retroceso %d pips para re-entrada",
+                        idx, precio, profit, p_G_Pips);
+            GuardarEstado();   // persistir en GlobalVariables por si VPS reinicia
+         }
+         ReponerEntrada(idx);
+      }
+      else if(entry == DEAL_ENTRY_INOUT)
+      {
+         LogOperacion("INOUT_" + IntegerToString(idx), precio, vol, profit);
+         ColocarContraparte(idx, dtype, precio);
+      }
 
       UltimoDealProcesado = ticket;
    }
@@ -2438,7 +2547,7 @@ void OnChartEvent(const int id, const long& lparam, const double& dparam, const 
                  mx <= ConfigPosX + (ConfigMinimized ? Sc(260) : CfgW) &&
                  my <= ConfigPosY + (ConfigMinimized ? Sc(40)  : cHDR_h))
             { DragConfig = true; DragOffX = mx-ConfigPosX; DragOffY = my-ConfigPosY; ChartSetInteger(0,CHART_MOUSE_SCROLL,false); }
-         else if(NewsVisible && NewsFilter_Active && NewsPosX >= 0 && mx >= NewsPosX && mx <= NewsPosX+Sc(240) && my >= NewsPosY && my <= NewsPosY+nHDR)
+         else if(NewsVisible && NewsFilter_Active && NewsPosX >= 0 && mx >= NewsPosX && mx <= NewsPosX+Sc(290) && my >= NewsPosY && my <= NewsPosY+nHDR)
             { DragNews = true; DragOffX = mx-NewsPosX; DragOffY = my-NewsPosY; ChartSetInteger(0,CHART_MOUSE_SCROLL,false); }
       }
 
@@ -2461,7 +2570,7 @@ void OnChartEvent(const int id, const long& lparam, const double& dparam, const 
       }
       else if(md && DragNews)
       {
-         int newX = MathMax(0, MathMin(mx-DragOffX, cw-Sc(240)));
+         int newX = MathMax(0, MathMin(mx-DragOffX, cw-Sc(290)));
          int newY = MathMax(0, MathMin(my-DragOffY, ch-nHDR));
          MoverPanelNoticias(newX - NewsPosX, newY - NewsPosY);
          NewsPosX = newX; NewsPosY = newY;
@@ -2644,6 +2753,9 @@ void GuardarEstado()
    GlobalVariableSet(p+"p_SL",          p_SL);              GlobalVariableSet(p+"GananciaAcum",GananciaAcumulada);
    GlobalVariableSet(p+"PanelMinimized",PanelMinimized?1.0:0.0);
    GlobalVariableSet(p+"PanelPosX",     (double)PanelPosX); GlobalVariableSet(p+"PanelPosY",(double)PanelPosY);
+   // Ping-pong state — persistir para sobrevivir reinicios del VPS
+   GlobalVariableSet(p+"PrecioUltimoCierre", PrecioUltimoCierre);
+   GlobalVariableSet(p+"EsperandoReentrada", EsperandoReentrada ? 1.0 : 0.0);
    GlobalVariableSet(p+"Saved",         1.0);
 }
 
@@ -2663,16 +2775,20 @@ bool CargarEstado()
    PanelMinimized  = GlobalVariableGet(p+"PanelMinimized") > 0.5;
    PanelPosX       = (int)GlobalVariableGet(p+"PanelPosX");
    PanelPosY       = (int)GlobalVariableGet(p+"PanelPosY");
+   // Restaurar estado ping-pong (sobrevive reinicios VPS)
+   PrecioUltimoCierre = GlobalVariableGet(p+"PrecioUltimoCierre");
+   EsperandoReentrada = GlobalVariableGet(p+"EsperandoReentrada") > 0.5;
    return true;
 }
 
 void BorrarEstadoGuardado()
 {
    string p = GVarPrefix();
-   string keys[18] = {"estado","p_Direccion","p_Techo","p_Piso","p_Trigger","p_G_Pips","p_Capital",
+   string keys[20] = {"estado","p_Direccion","p_Techo","p_Piso","p_Trigger","p_G_Pips","p_Capital",
                        "p_Vol","p_Risk","p_MaxOrd","p_Libre","p_TP","p_SL","GananciaAcum",
-                       "PanelMinimized","PanelPosX","PanelPosY","Saved"};
-   for(int i = 0; i < 18; i++) GlobalVariableDel(p + keys[i]);
+                       "PanelMinimized","PanelPosX","PanelPosY",
+                       "PrecioUltimoCierre","EsperandoReentrada","Saved"};
+   for(int i = 0; i < 20; i++) GlobalVariableDel(p + keys[i]);
 }
 
 //+------------------------------------------------------------------+
@@ -2731,7 +2847,6 @@ int OnInit()
 
 void OnTick()
 {
-   // Leer métricas reales del broker en cada tick (P&L, volumen posición)
    LeerMetricasBroker();
 
    if(estado == PRECHECK || estado == STOPPED) return;
@@ -2739,29 +2854,48 @@ void OnTick()
    if(estado == PENDING)
    {
       CheckTrigger();
-      DibujarPanel();   // PENDING: solo precio cambia frecuentemente
+      static datetime t0 = 0; datetime ahora0 = TimeCurrent();
+      if(ahora0 - t0 >= 3) { t0 = ahora0; DibujarPanel(); }
       return;
    }
 
    if(CheckKillSwitch()) return;
 
-   EstadoBot estadoAntes = estado;
    if(estado == ACTIVE)
    {
       CheckRange();
+      // TP via PositionModify — sin órdenes inversas (corrección unidireccional)
+      CheckTPPositions();
       ProcesarDeals();
+
+      // Ping-pong: esperar retroceso p_G_Pips antes de re-entrada
+      if(EsperandoReentrada && PrecioUltimoCierre > 0 &&
+         ContarPosicionesAbiertas() == 0 && ContarOrdenesPendientes() == 0)
+      {
+         double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         double paso = PipsAPrecio(p_G_Pips);
+         bool reentrada = (p_Direccion == GRID_LONG)
+                          ? (bid <= PrecioUltimoCierre - paso)
+                          : (bid >= PrecioUltimoCierre + paso);
+         if(reentrada)
+         {
+            PrintFormat("PING-PONG RE-ENTRADA: bid=%.5f cierre=%.5f paso=%d pips",
+                        bid, PrecioUltimoCierre, p_G_Pips);
+            EsperandoReentrada = false;
+            PrecioUltimoCierre = 0.0;
+            ActivarGrid();
+         }
+      }
    }
    else if(estado == PAUSED)
    {
       CheckRange();
    }
 
-   // Solo redibujar el panel si algo cambió (no en cada tick para no destruir el panel noticias)
+   // Redibujar panel máximo 1 vez cada 3 segundos
    static datetime ultimoRedrawPanel = 0;
    datetime ahora = TimeCurrent();
-   bool estadoCambio = (estado != estadoAntes);
-   // Redibujar: si cambió estado, o cada 3 segundos para actualizar precio/ganancia
-   if(estadoCambio || (ahora - ultimoRedrawPanel) >= 3)
+   if(ahora - ultimoRedrawPanel >= 3)
    {
       ultimoRedrawPanel = ahora;
       DibujarPanel();
