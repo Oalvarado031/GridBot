@@ -868,7 +868,7 @@ void DibujarPanel()
    int logoSz = Sc(20); int logoY = y + (HDR - logoSz) / 2;
 
    // ── Ajuste de altura del fondo — ya no incluye noticias (panel dedicado)
-   int totalH = PanelMinimized ? HDR : Sc(320);
+   int totalH = PanelMinimized ? HDR : Sc(310);
    PR("BG",     x, y, W, totalH, CLR_PANEL,   CLR_BORDER_LT, 1);
    PR("BG_HDR", x, y, W, HDR,    CLR_BG_DEEP, CLR_BG_DEEP,   0);
    if(!PanelMinimized) PHR("HDR_LN", x, y + HDR - 1, W, CLR_BORDER);
@@ -955,35 +955,33 @@ void DibujarPanel()
    PHR("S2B", LBL_X + Sc(46), cy + Sc(8), W - PAD*2 - Sc(46), CLR_BORDER);
    cy += Sc(18);
 
-   // Objetivo
+   // Objetivo — texto compacto para que no choque con la etiqueta
    PL("RCLA", LBL_X, cy + Sc(3), "Objetivo", CLR_TEXT_DIM, sz8, "Arial");
    PLA("RCVA", VAL_X, cy + Sc(3),
        DoubleToString(p_Risk,1)+"% · $"+DoubleToString(p_Capital*p_Risk/100,0),
-       CLR_GREEN, sz9, ANCHOR_RIGHT_UPPER, "Arial");
+       CLR_GREEN, sz8, ANCHOR_RIGHT_UPPER, "Arial");
    cy += LH;
 
    // Real
    PL("RRLA", LBL_X, cy + Sc(3), "Real", CLR_TEXT_DIM, sz8, "Arial");
    PLA("RRVA", VAL_X, cy + Sc(3),
-       DoubleToString(RiesgoRealPct,1)+"% · $"+DoubleToString(RiesgoRealUSD,1),
-       rskC, sz9, ANCHOR_RIGHT_UPPER, "Arial");
+       DoubleToString(RiesgoRealPct,1)+"% · $"+DoubleToString(RiesgoRealUSD,0),
+       rskC, sz8, ANCHOR_RIGHT_UPPER, "Arial");
    cy += LH;
 
-   // Uso/Cap — 2 líneas compactas para evitar solapamiento con etiqueta
-   PL("GRLA", LBL_X, cy + Sc(2), "Uso / Cap", CLR_TEXT_DIM, sz8, "Arial");
+   // Uso/Cap — etiqueta corta, valor a la derecha en una sola línea cuando cabe
+   PL("GRLA", LBL_X, cy + Sc(2), "Rejillas", CLR_TEXT_DIM, sz8, "Arial");
    PLA("GRVA",  VAL_X, cy + Sc(2),
-       IntegerToString(RejillasActivas) + " / " + IntegerToString(p_MaxOrd),
-       CLR_TEXT, sz9, ANCHOR_RIGHT_UPPER, "Arial");
-   PLA("GRVA2", VAL_X, cy + Sc(14),
-       "máx " + IntegerToString(MaxOrdersSafe),
-       CLR_TEXT_DIM, sz8, ANCHOR_RIGHT_UPPER, "Arial");
-   cy += LH + Sc(4);
+       IntegerToString(RejillasActivas) + "/" + IntegerToString(p_MaxOrd) +
+       " (max " + IntegerToString(MaxOrdersSafe) + ")",
+       CLR_TEXT, sz8, ANCHOR_RIGHT_UPPER, "Arial");
+   cy += LH;
 
-   // Gan/rej — usa TickValue real para precisión
-   PL("GPLA", LBL_X, cy + Sc(3), "Gan / rej", CLR_TEXT_DIM, sz8, "Arial");
+   // Gan/rej
+   PL("GPLA", LBL_X, cy + Sc(3), "Gan/rej", CLR_TEXT_DIM, sz8, "Arial");
    PLA("GPVA", VAL_X, cy + Sc(3),
        "$"+DoubleToString(GananciaPorRejilla,2),
-       CLR_GREEN, sz9, ANCHOR_RIGHT_UPPER, "Arial");
+       CLR_GREEN, sz8, ANCHOR_RIGHT_UPPER, "Arial");
    cy += LH + SEC_GAP;
 
    // ── GANANCIA (card destacada) — leída directo del broker ────
@@ -1818,14 +1816,31 @@ bool CheckKillSwitch()
    bool hSL = (p_Direccion == GRID_LONG) ? (bid <= p_SL) : (bid >= p_SL);
    if(!(hTP || hSL)) return false;
 
-   PrintFormat("KILL SWITCH: %s | precio=%.5f", hTP ? "TP" : "SL", bid);
-   CancelarPendientes();
-   CerrarTodo();   // Netting y Hedging: CerrarTodo ya maneja ambos casos internamente
+   PrintFormat("=========================================");
+   PrintFormat("KILL SWITCH ACTIVADO: %s | precio=%.5f", hTP ? "TP GLOBAL" : "SL GLOBAL", bid);
+   PrintFormat("Bot DETENIDO — ciclo cerrado, requiere reinicio manual");
+   PrintFormat("=========================================");
 
-   estado = hTP ? PENDING : STOPPED;
-   RejillasActivas = 0;
-   GananciaBroker  = 0.0;
-   VolumenPosicion = 0.0;
+   CancelarPendientes();
+   CerrarTodo();
+
+   // HARD STOP: tanto TP como SL detienen el bot completamente.
+   // Antes: TP→PENDING (re-armaba el ciclo automáticamente).
+   // Ahora: ambos→STOPPED (requiere acción manual del usuario para reiniciar).
+   estado = STOPPED;
+   RejillasActivas    = 0;
+   GananciaBroker     = 0.0;
+   VolumenPosicion    = 0.0;
+   PrecioUltimoCierre = 0.0;          // limpiar estado ping-pong
+   EsperandoReentrada = false;
+   GuardarEstado();                    // persistir STOPPED por si VPS reinicia
+
+   // Mostrar alerta visible al usuario en el panel
+   string motivo = hTP ? "TP GLOBAL ALCANZADO" : "SL GLOBAL ALCANZADO";
+   string detalle = "Ciclo cerrado en " + DoubleToString(bid, _Digits) +
+                    ". Bot detenido. Pulsa INICIAR BOT para un nuevo ciclo.";
+   MostrarAlerta(motivo, detalle, "", hTP ? ALERT_OK : ALERT_ERROR);
+
    DibujarLineasGrid(); DibujarPanel();
    return true;
 }
