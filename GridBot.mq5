@@ -1839,7 +1839,7 @@ bool CheckKillSwitch()
    string motivo = hTP ? "TP GLOBAL ALCANZADO" : "SL GLOBAL ALCANZADO";
    string detalle = "Ciclo cerrado en " + DoubleToString(bid, _Digits) +
                     ". Bot detenido. Pulsa INICIAR BOT para un nuevo ciclo.";
-   MostrarAlerta(motivo, detalle, "", hTP ? ALERT_OK : ALERT_ERROR);
+   MostrarAlerta(motivo, detalle, "", hTP ? ALERT_SUCCESS : ALERT_ERROR);
 
    DibujarLineasGrid(); DibujarPanel();
    return true;
@@ -2490,16 +2490,15 @@ void ProcesarDeals()
       else if(entry == DEAL_ENTRY_OUT)
       {
          LogOperacion("CLOSE_" + IntegerToString(idx), precio, vol, profit);
-         // Ping-pong: guardar precio de cierre para calcular retroceso de re-entrada
          if(profit > 0)
          {
-            PrecioUltimoCierre = precio;
-            EsperandoReentrada = true;
-            PrintFormat("TP alcanzado idx=%d precio=%.5f profit=%.2f — esperando retroceso %d pips para re-entrada",
-                        idx, precio, profit, p_G_Pips);
-            GuardarEstado();   // persistir en GlobalVariables por si VPS reinicia
+            PrintFormat("TP cerrado idx=%d precio=%.5f profit=%.2f — rejilla liberada para re-entrada",
+                        idx, precio, profit);
          }
-         ReponerEntrada(idx);
+         // Liberar este nivel para que el re-grid automático lo recoloque.
+         // MEMORIA CERO: no se marca como "usado", puede volver a dispararse.
+         MarcarRejillaActiva(idx, false);
+         if(RejillasActivas > 0) RejillasActivas--;
       }
       else if(entry == DEAL_ENTRY_INOUT)
       {
@@ -2883,23 +2882,23 @@ void OnTick()
       CheckTPPositions();
       ProcesarDeals();
 
-      // Ping-pong: esperar retroceso p_G_Pips antes de re-entrada
-      if(EsperandoReentrada && PrecioUltimoCierre > 0 &&
-         ContarPosicionesAbiertas() == 0 && ContarOrdenesPendientes() == 0)
+      // ────────────────────────────────────────────────────────────
+      // MEMORIA CERO — Re-arme automático de la rejilla
+      // Si no hay posiciones abiertas (último TP cerró todo) y no hay
+      // pendientes en los niveles, el bot libera todos los niveles
+      // y re-arma la rejilla completa. Esto permite ping-pong infinito:
+      // cada nivel puede dispararse cuantas veces vuelva a tocarlo el precio.
+      // ────────────────────────────────────────────────────────────
+      int posAbiertas = ContarPosicionesAbiertas();
+      int ordPendientes = ContarOrdenesPendientes();
+      if(posAbiertas == 0 && ordPendientes == 0)
       {
-         double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-         double paso = PipsAPrecio(p_G_Pips);
-         bool reentrada = (p_Direccion == GRID_LONG)
-                          ? (bid <= PrecioUltimoCierre - paso)
-                          : (bid >= PrecioUltimoCierre + paso);
-         if(reentrada)
-         {
-            PrintFormat("PING-PONG RE-ENTRADA: bid=%.5f cierre=%.5f paso=%d pips",
-                        bid, PrecioUltimoCierre, p_G_Pips);
-            EsperandoReentrada = false;
-            PrecioUltimoCierre = 0.0;
-            ActivarGrid();
-         }
+         // Liberar memoria de rejillas usadas y re-armar rejilla limpia
+         PrintFormat("MEMORIA CERO — sin posiciones ni pendientes. Re-armando rejilla.");
+         RejillasActivas    = 0;
+         PrecioUltimoCierre = 0.0;
+         EsperandoReentrada = false;
+         ActivarGrid();   // re-arma todos los BuyLimit/SellLimit en los niveles
       }
    }
    else if(estado == PAUSED)
