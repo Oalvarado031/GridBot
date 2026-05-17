@@ -969,10 +969,11 @@ void DibujarPanel()
        rskC, sz8, ANCHOR_RIGHT_UPPER, "Arial");
    cy += LH;
 
-   // Uso/Cap — etiqueta corta, valor a la derecha en una sola línea cuando cabe
+   // Rejillas — calcular dinámicamente desde el broker (más confiable que el contador interno)
+   int rejReales = ContarPosicionesAbiertas() + ContarOrdenesPendientes();
    PL("GRLA", LBL_X, cy + Sc(2), "Rejillas", CLR_TEXT_DIM, sz8, "Arial");
    PLA("GRVA",  VAL_X, cy + Sc(2),
-       IntegerToString(RejillasActivas) + "/" + IntegerToString(p_MaxOrd) +
+       IntegerToString(rejReales) + "/" + IntegerToString(p_MaxOrd) +
        " (max " + IntegerToString(MaxOrdersSafe) + ")",
        CLR_TEXT, sz8, ANCHOR_RIGHT_UPPER, "Arial");
    cy += LH;
@@ -1699,6 +1700,65 @@ int ContarOrdenesPendientes()
 
 int EscanearOrdenesExistentes() { return ContarOrdenesPendientes() + ContarPosicionesAbiertas(); }
 
+// ──────────────────────────────────────────────────────────────────
+// RE-ARMAR GRID (ping-pong infinito)
+// Se llama desde OnTick cuando no hay posiciones ni pendientes.
+// A diferencia de ActivarGrid():
+//   - NO compra a mercado (evita entrar a precio horrible si el precio se alejó)
+//   - Coloca BuyLimits/SellLimits en TODOS los niveles del grid
+//   - Para LONG: BuyLimits en niveles por debajo del precio actual
+//   - Para SHORT: SellLimits en niveles por encima del precio actual
+//   - Si el precio está entre dos niveles, el más cercano puede ser BuyStop/SellStop
+//     pero para ping-pong en zonas oscilantes con Limits basta.
+// ──────────────────────────────────────────────────────────────────
+void ReArmarGrid()
+{
+   if(ArraySize(GridLevels) == 0) return;
+   if(estado != ACTIVE) return;
+
+   trade.SetExpertMagicNumber(Magic_Number);
+   trade.SetTypeFillingBySymbol(_Symbol);
+   long stops = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minD = stops * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   int col = 0;
+
+   int total = MathMin(ArraySize(GridLevels), p_MaxOrd);
+   int limite = p_Libre ? total : MathMin(total, MaxOrdersSafe);
+
+   if(p_Direccion == GRID_LONG)
+   {
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      if(!FiltrarDireccion(ORDER_TYPE_BUY)) return;
+      for(int i = 0; i < limite; i++)
+      {
+         double nv = GridLevels[i];
+         if(OrdenExisteEnNivel(nv)) continue;
+         if(nv >= ask - minD) continue;   // demasiado cerca o arriba del ask
+         if(trade.BuyLimit(p_Vol, nv, _Symbol, 0, 0, ORDER_TIME_GTC, 0,
+                           "GRID_BUY_" + IntegerToString(i)))
+            col++;
+      }
+   }
+   else
+   {
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      if(!FiltrarDireccion(ORDER_TYPE_SELL)) return;
+      for(int i = 0; i < limite; i++)
+      {
+         double nv = GridLevels[i];
+         if(OrdenExisteEnNivel(nv)) continue;
+         if(nv <= bid + minD) continue;
+         if(trade.SellLimit(p_Vol, nv, _Symbol, 0, 0, ORDER_TIME_GTC, 0,
+                            "GRID_SELL_" + IntegerToString(i)))
+            col++;
+      }
+   }
+
+   PrintFormat("RE-ARME PING-PONG: %d pendientes colocadas en %d niveles disponibles",
+               col, limite);
+   DibujarLineasGrid();
+}
+
 void ActivarGrid()
 {
    // Guard: sin rejillas calculadas no se puede activar
@@ -2055,7 +2115,11 @@ void CheckNewsFilter()
       NoticiaActual = nombreEvento;
       NoticiaHora   = horaEvento;
       estado = PAUSED;
-      PrintFormat("⏸ PAUSA NOTICIAS: %s @ %s (ventana -%dmin/+%dmin)",
+      // FIX: cancelar TODAS las pendientes durante la noticia.
+      // Las posiciones abiertas mantienen su TP/SL — solo se evita que
+      // BuyLimits/SellLimits se disparen por picos de spread durante el evento.
+      CancelarPendientes();
+      PrintFormat("⏸ PAUSA NOTICIAS: %s @ %s (ventana -%dmin/+%dmin) — pendientes canceladas",
                   nombreEvento, TimeToString(horaEvento, TIME_DATE|TIME_MINUTES),
                   News_MinBefore, News_MinAfter);
       DibujarPanel(); DibujarPanelNoticias();
@@ -2067,19 +2131,19 @@ void CheckNewsFilter()
       NoticiaActual = "";
       NoticiaHora   = 0;
 
-      // Verificar rango ANTES de reanudar: el precio pudo haber salido durante la pausa
       double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       bool   fuera = (bid > p_Techo || bid < p_Piso);
       if(!fuera)
       {
          estado = ACTIVE;
-         PrintFormat("REANUDADO tras noticias — en rango, ACTIVE");
+         // FIX: recolocar pendientes al reanudar — el bot vuelve a operar normalmente
+         ReArmarGrid();
+         PrintFormat("REANUDADO tras noticias — en rango, ACTIVE, pendientes restauradas");
       }
       else
       {
-         // Precio fuera del rango operativo: queda en PAUSED por rango, no por noticias
          estado = PAUSED;
-         PrintFormat("REANUDADO tras noticias — precio fuera de rango, PAUSED");
+         PrintFormat("REANUDADO tras noticias — precio fuera de rango, PAUSED (sin recolocar)");
       }
       DibujarPanel(); DibujarBotonesEsquina(); DibujarPanelNoticias();
    }
@@ -2364,14 +2428,20 @@ void CheckTPPositions()
                      ? NormalizeDouble(openPrice + paso, _Digits)
                      : NormalizeDouble(openPrice - paso, _Digits);
 
-      // Sincronizar TP en el broker si difiere (tolerancia 5 puntos)
-      double slObj = p_SL;
-      if(MathAbs(curTP - tpObj) > _Point * 5 || MathAbs(curSL - slObj) > _Point * 10)
+      // Sincronizar TP solo si:
+      //   1. El TP está en 0 (posición sin TP — broker no lo aplicó)
+      //   2. Difiere más de 20 puntos del objetivo (rara vez, pero por seguridad)
+      // Tolerancia generosa evita modificaciones constantes por redondeo del broker.
+      bool needsModify = (curTP == 0) || (MathAbs(curTP - tpObj) > _Point * 20);
+      bool needsSL     = (curSL == 0) || (MathAbs(curSL - p_SL) > _Point * 30);
+      if(needsModify || needsSL)
       {
-         if(!trade.PositionModify(ticket, slObj, tpObj))
-            PrintFormat("FALLO PositionModify tp=%.5f sl=%.5f rc=%u", tpObj, slObj, trade.ResultRetcode());
+         double slToSet = needsSL ? p_SL : curSL;
+         double tpToSet = needsModify ? tpObj : curTP;
+         if(!trade.PositionModify(ticket, slToSet, tpToSet))
+            PrintFormat("FALLO PositionModify tp=%.5f sl=%.5f rc=%u", tpToSet, slToSet, trade.ResultRetcode());
          else
-            PrintFormat("TP sincronizado → %.5f | SL → %.5f (ticket %I64u)", tpObj, slObj, ticket);
+            PrintFormat("TP/SL aplicado → TP=%.5f SL=%.5f (ticket %I64u)", tpToSet, slToSet, ticket);
       }
    }
 }
@@ -2492,13 +2562,44 @@ void ProcesarDeals()
          LogOperacion("CLOSE_" + IntegerToString(idx), precio, vol, profit);
          if(profit > 0)
          {
-            PrintFormat("TP cerrado idx=%d precio=%.5f profit=%.2f — rejilla liberada para re-entrada",
+            PrintFormat("TP cerrado idx=%d precio=%.5f profit=%.2f — recolocando pendiente",
                         idx, precio, profit);
          }
-         // Liberar este nivel para que el re-grid automático lo recoloque.
-         // MEMORIA CERO: no se marca como "usado", puede volver a dispararse.
+         // Liberar nivel y recolocar pendiente inmediatamente para ping-pong
          MarcarRejillaActiva(idx, false);
          if(RejillasActivas > 0) RejillasActivas--;
+
+         // Recolocar la orden pendiente en este nivel exacto
+         // (si aún cabe según riesgo y proximidad al precio actual)
+         if(idx >= 0 && idx < ArraySize(GridLevels) && estado == ACTIVE)
+         {
+            double nv = GridLevels[idx];
+            long stops = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+            double minD = stops * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+
+            if(!OrdenExisteEnNivel(nv))
+            {
+               trade.SetExpertMagicNumber(Magic_Number);
+               bool puede = true;
+               if(!p_Libre && ContarPosicionesAbiertas() >= MaxOrdersSafe) puede = false;
+               if(ContarPosicionesAbiertas() >= p_MaxOrd) puede = false;
+
+               if(puede && p_Direccion == GRID_LONG)
+               {
+                  double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+                  if(nv < ask - minD && FiltrarDireccion(ORDER_TYPE_BUY))
+                     trade.BuyLimit(p_Vol, nv, _Symbol, 0, 0, ORDER_TIME_GTC, 0,
+                                    "GRID_BUY_" + IntegerToString(idx));
+               }
+               else if(puede && p_Direccion == GRID_SHORT)
+               {
+                  double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+                  if(nv > bid + minD && FiltrarDireccion(ORDER_TYPE_SELL))
+                     trade.SellLimit(p_Vol, nv, _Symbol, 0, 0, ORDER_TIME_GTC, 0,
+                                     "GRID_SELL_" + IntegerToString(idx));
+               }
+            }
+         }
       }
       else if(entry == DEAL_ENTRY_INOUT)
       {
@@ -2811,7 +2912,7 @@ void BorrarEstadoGuardado()
 int OnInit()
 {
    Print("==============================================");
-   Print("GridBot v3.8.0 | Pips lineales | Netting compatible | ", _Symbol);
+   Print("GridBot v3.10 | Ping-pong infinito | Hard-stop | News-cancel | ", _Symbol);
    Print("==============================================");
 
    BotStartTime = TimeCurrent() - 86400;
@@ -2855,6 +2956,23 @@ int OnInit()
          Print("Sin ordenes en broker — volviendo a PRECHECK");
       }
    }
+   // FIX: si estado guardado es STOPPED pero hay pendientes residuales, alertar
+   else if(restaurado && estado == STOPPED)
+   {
+      int posAbiertas   = ContarPosicionesAbiertas();
+      int ordPendientes = ContarOrdenesPendientes();
+      if(posAbiertas > 0 || ordPendientes > 0)
+      {
+         PrintFormat("ATENCION: estado=STOPPED pero hay %d pos + %d pendientes en el broker. "
+                     "Estas ordenes NO seran gestionadas. Cancela manualmente o presiona INICIAR.",
+                     posAbiertas, ordPendientes);
+         MostrarAlerta("ORDENES RESIDUALES",
+                       "Hay " + IntegerToString(posAbiertas) + " posiciones y " +
+                       IntegerToString(ordPendientes) + " pendientes pero el bot esta detenido.",
+                       "Presiona INICIAR para retomarlas o cancela manualmente.",
+                       ALERT_WARN);
+      }
+   }
    DibujarLineasGrid(); DibujarPanel(); DibujarPanelNoticias();
    return INIT_SUCCEEDED;
 }
@@ -2883,27 +3001,29 @@ void OnTick()
       ProcesarDeals();
 
       // ────────────────────────────────────────────────────────────
-      // MEMORIA CERO — Re-arme automático de la rejilla
-      // Si no hay posiciones abiertas (último TP cerró todo) y no hay
-      // pendientes en los niveles, el bot libera todos los niveles
-      // y re-arma la rejilla completa. Esto permite ping-pong infinito:
-      // cada nivel puede dispararse cuantas veces vuelva a tocarlo el precio.
+      // MEMORIA CERO + PING-PONG INFINITO
       // ────────────────────────────────────────────────────────────
-      int posAbiertas = ContarPosicionesAbiertas();
+      int posAbiertas   = ContarPosicionesAbiertas();
       int ordPendientes = ContarOrdenesPendientes();
       if(posAbiertas == 0 && ordPendientes == 0)
       {
-         // Liberar memoria de rejillas usadas y re-armar rejilla limpia
-         PrintFormat("MEMORIA CERO — sin posiciones ni pendientes. Re-armando rejilla.");
+         PrintFormat("MEMORIA CERO — sin posiciones ni pendientes. Re-armando rejilla para ping-pong.");
          RejillasActivas    = 0;
          PrecioUltimoCierre = 0.0;
          EsperandoReentrada = false;
-         ActivarGrid();   // re-arma todos los BuyLimit/SellLimit en los niveles
+         ReArmarGrid();
       }
    }
    else if(estado == PAUSED)
    {
       CheckRange();
+      // FIX: en PAUSED seguimos sincronizando TPs y procesando deals.
+      // Las posiciones abiertas pueden cerrar por TP durante la pausa
+      // (rango/noticias) y necesitamos registrar el profit en el log.
+      // NO se re-arma rejilla — solo se procesan cierres que el broker
+      // ejecutó automáticamente.
+      CheckTPPositions();
+      ProcesarDeals();
    }
 
    // Redibujar panel máximo 1 vez cada 3 segundos
@@ -2933,7 +3053,7 @@ void OnDeinit(const int reason)
    else
       BorrarEstadoGuardado();
    BorrarTodo();
-   PrintFormat("GridBot v3.8.0 fin. Estado=%d | Acumulado=%.2f USD | %s",
+   PrintFormat("GridBot v3.10 fin. Estado=%d | Acumulado=%.2f USD | %s",
                estado, GananciaAcumulada, EsCuentaNetting ? "NETTING" : "HEDGING");
 }
 //+------------------------------------------------------------------+
